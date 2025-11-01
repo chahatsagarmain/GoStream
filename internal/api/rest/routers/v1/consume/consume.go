@@ -10,14 +10,14 @@ import (
 
 func temp(c *gin.Context) {
 	fmt.Printf("hi there")
-	c.JSON(http.StatusOK , gin.H{
-		"message" : "pong",
+	c.JSON(http.StatusOK, gin.H{
+		"message": "pong",
 	})
 }
 
-func ConsumeRoute(v1router *gin.RouterGroup){
-	v1router.GET("/consume/ping" , temp)
-	v1router.POST("/consumer" , consume.CreateConsumer)
-	v1router.GET("/consumer" , consume.GetConsumers)
-	v1router.GET("/offset" , consume.GetOffset)
+func ConsumeRoute(v1router *gin.RouterGroup) {
+	v1router.GET("/consume/ping", temp)
+	v1router.POST("/consumer", consume.CreateConsumer)
+	v1router.GET("/consumer", consume.GetConsumers)
+	v1router.GET("/offset", consume.GetOffset)
 }

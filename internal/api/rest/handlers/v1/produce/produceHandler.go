@@ -16,41 +16,41 @@ type getTopicBody struct {
 
 func CreateTopic(c *gin.Context) {
 	body := getTopicBody{}
-	if err := c.ShouldBind(&body) ; err != nil {
-		c.JSON(http.StatusBadRequest , gin.H{"message" : "invalid request body"})
+	if err := c.ShouldBind(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "invalid request body"})
 		return
 	}
 
-	found , err := store.CheckIfTopicsExists(body.Topicname)
+	found, err := store.CheckIfTopicsExists(body.Topicname)
 	if err != nil {
-		log.Printf("internal server error : %s" , err)
-		c.JSON(http.StatusInternalServerError , gin.H{"message" : "internal server error"})
+		log.Printf("internal server error : %s", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "internal server error"})
 		return
 	}
 
 	if !found {
-		if err := store.CreateTopics(body.Topicname) ; err != nil {
-			log.Printf("internal server error : %s" , err)
-			c.JSON(http.StatusInternalServerError , gin.H{"message" : "internal server error"})
+		if err := store.CreateTopics(body.Topicname); err != nil {
+			log.Printf("internal server error : %s", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "internal server error"})
 			return
 		}
-		c.JSON(http.StatusAccepted , gin.H{"message" : "topic created",
-										"topicname" : body.Topicname,
-									})
+		c.JSON(http.StatusAccepted, gin.H{"message": "topic created",
+			"topicname": body.Topicname,
+		})
 	} else {
-		c.JSON(http.StatusAccepted , gin.H{"message" : "topic already created",
-										"topicname" : body.Topicname,
-									})
+		c.JSON(http.StatusAccepted, gin.H{"message": "topic already created",
+			"topicname": body.Topicname,
+		})
 	}
-	
-} 
+
+}
 
 func GetTopics(c *gin.Context) {
-	topics , err := store.GetTopics()
+	topics, err := store.GetTopics()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError , gin.H{"message" : "internal server error"})
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "internal server error"})
 		return
 	}
 
-	c.JSON(http.StatusAccepted , gin.H{"message" : topics})
+	c.JSON(http.StatusAccepted, gin.H{"message": topics})
 }

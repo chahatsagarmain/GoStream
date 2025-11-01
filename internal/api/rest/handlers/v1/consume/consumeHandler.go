@@ -15,71 +15,71 @@ type getTopicBody struct {
 }
 
 type getTopicAndConsumerBody struct {
-	Topicname string `json:"topicname" binding:"required"`
+	Topicname  string `json:"topicname" binding:"required"`
 	Consumerid string `json:"consumerid" binding:"required"`
 }
 
 func CreateConsumer(c *gin.Context) {
 	body := getTopicBody{}
 	consumerId := uuid.New()
-	if err := c.ShouldBind(&body) ; err != nil {
-		c.JSON(http.StatusBadRequest , gin.H{"message" : "invalid request body"})
+	if err := c.ShouldBind(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "invalid request body"})
 		return
 	}
 
-	found , err := store.CheckIfTopicsExists(body.Topicname)
+	found, err := store.CheckIfTopicsExists(body.Topicname)
 	if err != nil {
-		log.Printf("internal server error : %s" , err)
-		c.JSON(http.StatusInternalServerError , gin.H{"message" : "internal server error"})
+		log.Printf("internal server error : %s", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "internal server error"})
 		return
 	}
 
 	if !found {
-		if err := store.CreateTopics(body.Topicname) ; err != nil {
-			log.Printf("internal server error : %s" , err)
-			c.JSON(http.StatusInternalServerError , gin.H{"message" : "internal server error"})
+		if err := store.CreateTopics(body.Topicname); err != nil {
+			log.Printf("internal server error : %s", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "internal server error"})
 			return
 		}
 	}
 
-	if err := store.CreateConsumer(consumerId.String() , body.Topicname); err != nil {
-		return 
-	}
-
-	c.JSON(http.StatusAccepted , gin.H{"message" : "consumer created",
-										"consumer" : consumerId.String(),
-										"topicname" : body.Topicname,
-									})
-} 
-
-func GetConsumers(c *gin.Context) {
-	consumers , err := store.GetConsumers()
-	if err != nil {
-		log.Printf("internal server error : %s",err)
-		c.JSON(http.StatusInternalServerError , gin.H{"message" : "internal server error"})
+	if err := store.CreateConsumer(consumerId.String(), body.Topicname); err != nil {
 		return
 	}
 
-	c.JSON(http.StatusAccepted , gin.H{"message" : consumers})
+	c.JSON(http.StatusAccepted, gin.H{"message": "consumer created",
+		"consumer":  consumerId.String(),
+		"topicname": body.Topicname,
+	})
 }
 
-func GetOffset(c *gin.Context){
+func GetConsumers(c *gin.Context) {
+	consumers, err := store.GetConsumers()
+	if err != nil {
+		log.Printf("internal server error : %s", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "internal server error"})
+		return
+	}
+
+	c.JSON(http.StatusAccepted, gin.H{"message": consumers})
+}
+
+func GetOffset(c *gin.Context) {
 	body := getTopicAndConsumerBody{
 		Consumerid: c.Query("consumerid"),
-		Topicname: c.Query("topicname"),
+		Topicname:  c.Query("topicname"),
 	}
-	if err := c.ShouldBind(&body) ; err != nil {
-		c.JSON(http.StatusBadRequest , gin.H{"message" : "invalid request values"})
-		return 
+	if err := c.ShouldBind(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "invalid request values"})
+		return
 	}
-	offset , err := store.GetOffset(body.Consumerid , body.Topicname)
-	fmt.Printf("%v , %v" , err , offset)
-	fmt.Printf("%v" , body)
+	offset, err := store.GetOffset(body.Consumerid, body.Topicname)
+	fmt.Printf("%v , %v", err, offset)
+	fmt.Printf("%v", body)
 	if err != nil {
 		log.Printf("server error : %s", err)
-		c.JSON(http.StatusNotFound , gin.H{"message" : "topic does not exist"})
-		return 
+		c.JSON(http.StatusNotFound, gin.H{"message": "topic does not exist"})
+		return
 	}
-	c.JSON(http.StatusAccepted , gin.H{"message" : "fetched offset",
-										"offset" : offset})		
+	c.JSON(http.StatusAccepted, gin.H{"message": "fetched offset",
+		"offset": offset})
 }

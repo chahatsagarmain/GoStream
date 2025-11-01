@@ -6,7 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func V1RouterGroup(router *gin.Engine){
+func V1RouterGroup(router *gin.Engine) {
 	v1 := router.Group("/v1")
 	produce.ProduceRoute(v1)
 	consume.ConsumeRoute(v1)
