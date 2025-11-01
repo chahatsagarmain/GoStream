@@ -19,6 +19,7 @@ func ProduceRoute(v1router *gin.RouterGroup) {
 	v1router.GET("/ping", temp)
 	v1router.GET("/topic", produce.GetTopics)
 	v1router.POST("/topic", produce.CreateTopic)
+	v1router.DELETE("/topic", produce.DeleteTopic)
 	v1router.POST("/publish", produce.PublishMessage)
 	v1router.GET("/message", produce.FetchMessage)
 }
