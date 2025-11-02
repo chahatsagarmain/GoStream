@@ -5,7 +5,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/chahatsagarmain/GoKafka/internal/redisstore/store"
+	"github.com/chahatsagarmain/GoStream/internal/redisstore/store"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -73,13 +73,25 @@ func GetOffset(c *gin.Context) {
 		return
 	}
 	offset, err := store.GetOffset(body.Consumerid, body.Topicname)
-	fmt.Printf("%v , %v", err, offset)
-	fmt.Printf("%v", body)
 	if err != nil {
 		log.Printf("server error : %s", err)
-		c.JSON(http.StatusNotFound, gin.H{"message": "topic does not exist"})
+		c.JSON(http.StatusNotFound, gin.H{"message": "topic or consumer does not exist"})
 		return
 	}
 	c.JSON(http.StatusAccepted, gin.H{"message": "fetched offset",
 		"offset": offset})
+}
+
+func DeleteConsumer(c *gin.Context) {
+	consumerId := c.DefaultQuery("consumerId", "")
+	if consumerId == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "consumer id not provided"})
+		return
+	}
+	if err := store.DeleteConsumer(consumerId); err != nil {
+		log.Printf("server error : %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "internal server error"})
+		return
+	}
+	c.JSON(http.StatusAccepted, gin.H{"message": fmt.Sprintf("consumer id %v deleted", consumerId)})
 }

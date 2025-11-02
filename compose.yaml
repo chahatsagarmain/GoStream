@@ -1,6 +1,19 @@
 version: "3.8"
 
 services:
+  go-stream:
+    build:
+      context: ./       
+      dockerfile: Dockerfile
+    container_name: go-stream
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      - REDIS_ADDR=redis:6379
+    ports:
+      - "8080:8080"
+
   redis:
     image: redis
     container_name: go_kafka_redis

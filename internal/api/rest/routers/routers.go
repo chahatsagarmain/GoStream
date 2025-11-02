@@ -1,7 +1,7 @@
 package routers
 
 import (
-	"github.com/chahatsagarmain/GoKafka/internal/api/rest/routers/v1"
+	v1 "github.com/chahatsagarmain/GoStream/internal/api/rest/routers/v1"
 	"github.com/gin-gonic/gin"
 )
 

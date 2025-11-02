@@ -1,5 +1,5 @@
 run:
-	go run ./cmd/GoEvent
+	go run ./cmd/GoStream
 
 format:
 	go fmt ./...

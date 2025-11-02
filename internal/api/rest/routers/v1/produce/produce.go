@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/chahatsagarmain/GoKafka/internal/api/rest/handlers/v1/produce"
+	"github.com/chahatsagarmain/GoStream/internal/api/rest/handlers/v1/produce"
 	"github.com/gin-gonic/gin"
 )
 

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/chahatsagarmain/GoKafka/internal/api/rest/handlers/v1/consume"
+	"github.com/chahatsagarmain/GoStream/internal/api/rest/handlers/v1/consume"
 	"github.com/gin-gonic/gin"
 )
 
@@ -20,4 +20,5 @@ func ConsumeRoute(v1router *gin.RouterGroup) {
 	v1router.POST("/consumer", consume.CreateConsumer)
 	v1router.GET("/consumer", consume.GetConsumers)
 	v1router.GET("/offset", consume.GetOffset)
+	v1router.DELETE("/consumer", consume.DeleteConsumer)
 }

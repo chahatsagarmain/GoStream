@@ -6,7 +6,7 @@ import (
 	"log"
 	"strconv"
 
-	"github.com/chahatsagarmain/GoKafka/internal/redisstore"
+	"github.com/chahatsagarmain/GoStream/internal/redisstore"
 )
 
 const topickey = "topic"
@@ -175,8 +175,7 @@ func CheckIfTopicsExists(topicname string) (bool, error) {
 
 func CheckIfConsumersExists(consumername string) (bool, error) {
 	ctx := context.Background()
-
-	values, err := redisstore.Client.LRange(ctx, consumername, 0, -1).Result()
+	values, err := redisstore.Client.LRange(ctx, consumerkey, 0, -1).Result()
 	if err != nil {
 		return false, err
 	}

@@ -4,7 +4,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/chahatsagarmain/GoKafka/internal/redisstore/store"
+	"github.com/chahatsagarmain/GoStream/internal/redisstore/store"
 	"github.com/gin-gonic/gin"
 )
 
@@ -55,16 +55,16 @@ func GetTopics(c *gin.Context) {
 	c.JSON(http.StatusAccepted, gin.H{"message": topics})
 }
 
-func DeleteTopic(c *gin.Context){
-	topicname := c.DefaultQuery("topicname" , "")
+func DeleteTopic(c *gin.Context) {
+	topicname := c.DefaultQuery("topicname", "")
 	if topicname == "" {
-		c.JSON(http.StatusBadRequest , gin.H{"message" : "topicname missing"})
+		c.JSON(http.StatusBadRequest, gin.H{"message": "topicname missing"})
 		return
 	}
 	if err := store.DeleteTopic(topicname); err != nil {
-		log.Printf("server error : %s" , err)
-		c.JSON(http.StatusInternalServerError , gin.H{"message" : err})
+		log.Printf("server error : %s", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err})
 		return
 	}
-	c.JSON(http.StatusOK , gin.H{"message" : "deleted topic"})
+	c.JSON(http.StatusOK, gin.H{"message": "deleted topic"})
 }

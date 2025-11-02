@@ -1,8 +1,8 @@
 package v1
 
 import (
-	"github.com/chahatsagarmain/GoKafka/internal/api/rest/routers/v1/consume"
-	"github.com/chahatsagarmain/GoKafka/internal/api/rest/routers/v1/produce"
+	"github.com/chahatsagarmain/GoStream/internal/api/rest/routers/v1/consume"
+	"github.com/chahatsagarmain/GoStream/internal/api/rest/routers/v1/produce"
 	"github.com/gin-gonic/gin"
 )
 

@@ -1,4 +1,4 @@
-module github.com/chahatsagarmain/GoKafka
+module github.com/chahatsagarmain/GoStream
 
 go 1.25.3
 

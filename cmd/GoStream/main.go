@@ -1,13 +1,13 @@
 package main
 
 import (
-	"context"
+	// "context"
 	"log"
 	"sync"
-	"time"
+	// "time"
 
-	"github.com/chahatsagarmain/GoKafka/api/rest"
-	"github.com/chahatsagarmain/GoKafka/internal/redisstore"
+	"github.com/chahatsagarmain/GoStream/api/rest"
+	"github.com/chahatsagarmain/GoStream/internal/redisstore"
 )
 
 func main() {
@@ -23,11 +23,11 @@ func main() {
 
 	go func() {
 		defer wg.Done()
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
+		// ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		// defer cancel()
 
-		rclient := redisstore.InitRedisClient()
-		if err := rclient.Ping(ctx).Err(); err != nil {
+		err := redisstore.InitRedisClient()
+		if err != nil {
 			log.Fatalf("redis ping fatal error : %s ", err)
 		}
 		log.Printf("redis connected")
