@@ -5,7 +5,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/chahatsagarmain/GoStream/internal/redisstore/store"
+	"github.com/chahatsagarmain/GoStream/internal/store"
 	"github.com/gin-gonic/gin"
 )
 
@@ -14,6 +14,12 @@ type messageBody struct {
 	Topicname  string `json:"topicname" binding:"required"`
 	Consumerid string `json:"consumerid,omitempty"`
 }
+
+type publishMessageBody struct {
+	Message    string `json:"message" binding:"required"`
+	Topicname  string `json:"topicname" binding:"required"`
+}
+
 
 func FetchMessage(c *gin.Context) {
 	body := messageBody{
@@ -34,7 +40,7 @@ func FetchMessage(c *gin.Context) {
 }
 
 func PublishMessage(c *gin.Context) {
-	body := messageBody{}
+	body := publishMessageBody{}
 	if err := c.ShouldBind(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "invalid request body"})
 		return

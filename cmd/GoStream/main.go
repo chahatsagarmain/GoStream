@@ -4,10 +4,12 @@ import (
 	// "context"
 	"log"
 	"sync"
+
 	// "time"
 
 	"github.com/chahatsagarmain/GoStream/api/rest"
-	"github.com/chahatsagarmain/GoStream/internal/redisstore"
+	grpcserver "github.com/chahatsagarmain/GoStream/internal/grpc"
+	"github.com/chahatsagarmain/GoStream/internal/memstore"
 )
 
 func main() {
@@ -21,16 +23,16 @@ func main() {
 		log.Println("started rest service")
 	}()
 
+	// Initialize in-memory store and use it so the package isn't an unused import.
+	topics := memstore.GetTopics()
+	log.Printf("memstore topics: %d", len(topics))
+
+	// start gRPC server on :9090
 	go func() {
 		defer wg.Done()
-		// ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		// defer cancel()
-
-		err := redisstore.InitRedisClient()
-		if err != nil {
-			log.Fatalf("redis ping fatal error : %s ", err)
+		if err := grpcserver.StartGRPCServer(":9090"); err != nil {
+			log.Fatalf("grpc server error: %v", err)
 		}
-		log.Printf("redis connected")
 	}()
 
 	wg.Wait()

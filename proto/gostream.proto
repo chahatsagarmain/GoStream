@@ -1,0 +1,82 @@
+syntax = "proto3";
+
+package gostream;
+
+option go_package = "github.com/chahatsagarmain/GoStream/proto;proto";
+
+// ProducerService exposes topic and publish operations
+service ProducerService {
+  rpc CreateTopic(CreateTopicRequest) returns (CreateTopicResponse) {}
+  rpc DeleteTopic(DeleteTopicRequest) returns (DeleteTopicResponse) {}
+  rpc GetTopics(GetTopicsRequest) returns (GetTopicsResponse) {}
+  rpc Publish(PublishRequest) returns (PublishResponse) {}
+}
+
+// ConsumerService exposes consumer operations
+service ConsumerService {
+  rpc CreateConsumer(CreateConsumerRequest) returns (CreateConsumerResponse) {}
+  rpc GetConsumers(GetConsumersRequest) returns (GetConsumersResponse) {}
+  rpc GetOffset(GetOffsetRequest) returns (GetOffsetResponse) {}
+  rpc Fetch(FetchRequest) returns (FetchResponse) {}
+}
+
+message CreateTopicRequest {
+  string topicname = 1;
+}
+message CreateTopicResponse {
+  bool ok = 1;
+  string message = 2;
+}
+
+message DeleteTopicRequest {
+  string topicname = 1;
+}
+message DeleteTopicResponse {
+  bool ok = 1;
+  string message = 2;
+}
+
+message GetTopicsRequest {}
+message GetTopicsResponse {
+  repeated string topics = 1;
+}
+
+message PublishRequest {
+  string topicname = 1;
+  string message = 2;
+  string consumerid = 3; // optional
+}
+message PublishResponse {
+  bool accepted = 1;
+  string message = 2;
+}
+
+message CreateConsumerRequest {
+  string consumerid = 1;
+  string topicname = 2;
+}
+message CreateConsumerResponse {
+  bool ok = 1;
+  string message = 2;
+}
+
+message GetConsumersRequest {}
+message GetConsumersResponse {
+  repeated string consumers = 1;
+}
+
+message GetOffsetRequest {
+  string consumerid = 1;
+  string topicname = 2;
+}
+message GetOffsetResponse {
+  int32 offset = 1;
+}
+
+message FetchRequest {
+  string consumerid = 1;
+  string topicname = 2;
+}
+message FetchResponse {
+  string message = 1;
+}

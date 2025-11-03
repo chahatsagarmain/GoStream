@@ -5,7 +5,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/chahatsagarmain/GoStream/internal/redisstore/store"
+	"github.com/chahatsagarmain/GoStream/internal/store"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
