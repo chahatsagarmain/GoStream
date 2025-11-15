@@ -1,3 +1,4 @@
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/chahatsagarmain/GoStream)
 # GoStream
 
 GoStream is a small, in-memory message streaming service written in Go. It provides simple topic management, publishing, and consumer offset tracking. The project exposes both a REST API and gRPC services so you can interact with it from different clients.
