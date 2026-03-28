@@ -295,3 +295,47 @@ func GetMessageFromLog(consumer, topic string) (string, error) {
 
 	return message, nil
 }
+
+func GetAllOffsets() map[string]int {
+	offsets.RLock()
+	defer offsets.RUnlock()
+	return offsets.positions
+}
+
+func GetAllMessages() map[string][]string {
+	messages.RLock()
+	defer messages.RUnlock()
+	return messages.logs
+}
+
+// RestoreStore injects snapshot data by globally locking all core structures
+func RestoreStore(newTopics []string, newConsumers []string, newMessages map[string][]string, newOffsets map[string]int) {
+	topics.Lock()
+	defer topics.Unlock()
+	consumers.Lock()
+	defer consumers.Unlock()
+	messages.Lock()
+	defer messages.Unlock()
+	offsets.Lock()
+	defer offsets.Unlock()
+
+	// Handle nil initialization to be safe
+	if newTopics == nil {
+		newTopics = make([]string, 0)
+	}
+	if newConsumers == nil {
+		newConsumers = make([]string, 0)
+	}
+	if newMessages == nil {
+		newMessages = make(map[string][]string)
+	}
+	if newOffsets == nil {
+		newOffsets = make(map[string]int)
+	}
+
+	topics.items = newTopics
+	consumers.items = newConsumers
+	messages.logs = newMessages
+	offsets.positions = newOffsets
+}
+

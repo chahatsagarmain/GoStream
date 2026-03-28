@@ -10,12 +10,18 @@ import (
 	"github.com/chahatsagarmain/GoStream/api/rest"
 	grpcserver "github.com/chahatsagarmain/GoStream/internal/grpc"
 	"github.com/chahatsagarmain/GoStream/internal/memstore"
+	"github.com/chahatsagarmain/GoStream/internal/mock"
+	"github.com/chahatsagarmain/GoStream/internal/snapshot"
 )
 
 func main() {
 	var wg sync.WaitGroup
 
-	wg.Add(2)
+	// Automatically inject our mock data so the stream doesn't boot empty
+	mock.PopulateStore()
+
+	// Handle 3 parallel systems: REST API, gRPC Server, and the Background Snapshotter
+	wg.Add(3)
 
 	go func() {
 		defer wg.Done()
@@ -33,6 +39,13 @@ func main() {
 		if err := grpcserver.StartGRPCServer(":9090"); err != nil {
 			log.Fatalf("grpc server error: %v", err)
 		}
+	}()
+
+	// start Snapshot background loop
+	go func() {
+		defer wg.Done()
+		sp := snapshot.NewSnapShot()
+		sp.StartSnapShot()
 	}()
 
 	wg.Wait()

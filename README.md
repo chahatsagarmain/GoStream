@@ -8,6 +8,7 @@ Key features
 - Publish messages to topics (append-only logs)
 - Create consumers and track per-consumer offsets
 - Fetch messages for a consumer from its current offset
+- Automated background state snapshotting and disaster recovery
 - REST API (Gin) and gRPC API (protobuf + grpc)
 
 This repository is intentionally lightweight and uses an in-memory store (no external DB) by default. It's suitable for development, testing, or learning how a simple streaming/message queue works.
@@ -99,6 +100,18 @@ Example requests
 - Create consumer (REST): POST /v1/consume/consumer {"topicname":"my-topic"}
 - Fetch (REST): GET /v1/produce/message?topicname=my-topic&consumerid=<id>
 
+Snapshot and Recovery
+---------------------
+GoStream features an integrated automated background snapshot system natively configured in `internal/snapshot`. Because data volatility is a primary concern for in-memory systems, the runtime automatically serializes the entire active application state (topics, subscriber lists, current message logs, and respective consumer offsets) strictly into `.json` backup files inside a local `./snapshots` directory.
+
+### Snapshot Mechanics
+The snapshot implementation is designed to securely protect active state without corrupting concurrent memory access:
+1. **Background Loop**: Firing `snapshot.NewSnapShot().StartSnapShot()` spins up a goroutine that runs infinitely. Once every 10 seconds, it triggers a system state backup.
+2. **Atomic Extraction**: The system secures read locks (`RLock()`) globally across the four core data structures (`topics`, `consumers`, `messages`, `offsets`) to clone everything in a perfectly synchronized state, avoiding data race conditions from active I/O.
+3. **JSON Persistence**: The unified data is serialized via `json.MarshalIndent` and safely written to local disk in a formatted `snapshot_<unix_epoch>.json` file.
+4. **Boot Recovery**: Starting the application manually triggers `snapshot.RestoreSnapShot()`. It uses `os.ReadDir` to parse the `snapshots` folder, filters the latest modification timeframe, unmarshals the JSON state, and invokes an exclusive global `Lock()` across the `memstore` to instantly reinstate all live data exactly where it left off.
+
+
 Benchmarks and Capacity
 -----------------------
 GoStream's in-memory storage includes extensive capacity benchmarks located in `internal/memstore/store_test.go`. These evaluate the system under load simulating tens of thousands of topics, published messages, and reads.
@@ -117,8 +130,7 @@ A full round-trip evaluation tests the scenario of repeatedly spinning up 100 to
   - `topics` and `consumers` check for existence using slices instead of maps. This behaves linearly ($O(N)$) and degrades registration speed drastically for topologies past 10,000 topics.
   - Per-message consumer offsets (using `"topic:consumer"` dictionary keys) incur high garbage collection overhead due to runtime string concatenation.
 
-*For production workloads with large topologies, developers should swap the tracking arrays to Maps.*
-
+To-Do : Swap Map inplace of slice 
 Contributing
 - Pull requests welcome. Create an issue or PR for larger changes.
 
