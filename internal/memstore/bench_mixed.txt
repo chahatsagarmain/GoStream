@@ -1,0 +1,7 @@
+﻿goos: windows
+goarch: amd64
+pkg: github.com/chahatsagarmain/GoStream/internal/memstore
+cpu: 12th Gen Intel(R) Core(TM) i5-12450H
+BenchmarkCapacity_MixedWorkload-12    	      12	 867001792 ns/op	 4700400 B/op	    9323 allocs/op
+PASS
+ok  	github.com/chahatsagarmain/GoStream/internal/memstore	10.905s
