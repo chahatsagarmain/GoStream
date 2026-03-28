@@ -60,23 +60,6 @@ protoc \
 # Verify build
 go build ./...
 ```
-
-Docker Compose
-
-This repo includes a `compose.yaml` to run the service inside a container for quick testing.
-
-Build and run with Docker Compose:
-
-```bash
-# Build the service image and start with docker-compose
-docker compose up --build
-
-# Or (legacy) with docker-compose:
-docker-compose up --build
-```
-
-After compose finishes starting, the same endpoints are available (gRPC port and REST port depending on the compose settings).
-
 Notes & tips
 - The default store is in-memory and ephemeral. If you restart the server you will lose topics and messages.
 - The code contains an `internal/store` wrapper which delegates to the in-memory `internal/memstore`. You can add a Redis or persistent store and wire it through `internal/store` if needed.
