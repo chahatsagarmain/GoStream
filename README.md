@@ -75,10 +75,14 @@ High level flow
 - The `memstore` package holds the in-memory data structures: a list of topics, a list of consumers, per-topic append-only message logs, and per-consumer offsets for each topic.
 
 Core data structures
-- topics: []string — list of topic names.
-- consumers: []string — list of consumer IDs.
-- messages: map[string][]string — mapping topic name -> slice of messages (append-only log).
-- offsets: map[string]int — mapping `"topic:consumer"` to the consumer's next-read offset.
+- `topics`: `map[string]int` — set of topic names.
+- `consumers`: `map[string]int` — set of consumer IDs.
+- `messages`: `map[string][]string` — mapping topic name -> append-only slice of messages.
+- `offsets`: `map[string]int` — mapping `"topic:consumer"` to the consumer's next-read offset.
+- `topicConsumers`: `map[string]map[string]struct{}` — mapping topic name -> set of subscribed consumer IDs. Enables O(1) lookup of all consumers for a given topic.
+
+> [!NOTE]
+> Topic names may **not contain `:`** since it is used as the delimiter in offset keys (`"topic:consumer"`).
 
 Concurrency and safety
 - `memstore` uses simple RWMutexes to protect each top-level structure (topics, consumers, messages, offsets). This keeps operations safe for concurrent access.
@@ -94,11 +98,25 @@ Design notes
 - The wrapper `internal/store` isolates higher-level handlers from the concrete storage implementation. This makes it straightforward to swap in a persistent store (e.g., Redis or a database) in the future.
 - The in-memory approach is simple and fast for development, but not durable. For production you'd wire a persistent backend and rework some concurrency/atomicity details.
 
-Example requests
-- Create topic (REST): POST /v1/produce/topic {"topicname":"my-topic"}
-- Publish message (REST): POST /v1/produce/message {"topicname":"my-topic","message":"hello"}
-- Create consumer (REST): POST /v1/consume/consumer {"topicname":"my-topic"}
-- Fetch (REST): GET /v1/produce/message?topicname=my-topic&consumerid=<id>
+### REST API Reference
+
+**Topic Management**
+- `POST /v1/topic` - Create a new topic (Payload: `{"topicname":"my-topic"}`)
+- `GET /v1/topic` - List all topics
+- `DELETE /v1/topic` - Delete a topic and its messages (Payload: `{"topicname":"my-topic"}`)
+
+**Message Produce/Consume**
+- `POST /v1/publish` - Publish a message to a topic (Payload: `{"topicname":"my-topic","message":"hello"}`)
+- `GET /v1/message` - Fetch a message for a consumer (Query: `?topicname=my-topic&consumerid=<id>`)
+
+**Consumer & Offset Management**
+- `POST /v1/consumer` - Create a consumer assigned to a topic (Payload: `{"topicname":"my-topic"}`)
+- `GET /v1/consumer` - List all consumers
+- `GET /v1/consumer/topic` - List consumers subscribed to a specific topic (Query: `?topicname=my-topic`)
+- `DELETE /v1/consumer` - Delete a consumer (Query: `?consumerId=<id>`)
+- `GET /v1/offset` - Get a consumer's current offset (Query: `?topicname=my-topic&consumerid=<id>`)
+- `GET /v1/ping` - Health check ping (produce scope)
+- `GET /v1/consume/ping` - Health check ping (consume scope)
 
 Snapshot and Recovery
 ---------------------

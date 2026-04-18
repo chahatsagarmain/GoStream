@@ -2,6 +2,7 @@ package memstore
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -14,7 +15,6 @@ var (
 		items: make(map[string]int),
 	}
 
-	// consumers is a list of all consumers
 	consumers = struct {
 		sync.RWMutex
 		items map[string]int
@@ -22,7 +22,6 @@ var (
 		items: make(map[string]int),
 	}
 
-	// messages stores topic messages as append-only logs
 	messages = struct {
 		sync.RWMutex
 		logs map[string][]string // topicname -> []messages
@@ -30,12 +29,18 @@ var (
 		logs: make(map[string][]string),
 	}
 
-	// offsets stores consumer positions in topics
 	offsets = struct {
 		sync.RWMutex
 		positions map[string]int // "topic:consumer" -> offset
 	}{
 		positions: make(map[string]int),
+	}
+
+	topicConsumers = struct {
+		sync.RWMutex
+		subscribers map[string]map[string]struct{} // topic -> set{consumerID}
+	}{
+		subscribers: make(map[string]map[string]struct{}),
 	}
 )
 
@@ -44,6 +49,10 @@ func CreateTopic(topicname string) error {
 	topics.Lock()
 	defer topics.Unlock()
 
+	contains := strings.Contains(topicname, ":")
+	if contains {
+		return fmt.Errorf("wrong topic name format")
+	}
 	// Check if topic exists
 	if _, exists := topics.items[topicname]; exists {
 		return nil
@@ -51,10 +60,13 @@ func CreateTopic(topicname string) error {
 
 	topics.items[topicname] = 1
 
-	// Initialize message log for topic
 	messages.Lock()
 	messages.logs[topicname] = make([]string, 0)
 	messages.Unlock()
+
+	topicConsumers.Lock()
+	topicConsumers.subscribers[topicname] = make(map[string]struct{})
+	topicConsumers.Unlock()
 
 	return nil
 }
@@ -79,12 +91,10 @@ func DeleteTopic(topicname string) error {
 
 	delete(topics.items, topicname)
 
-	// Remove messages
 	messages.Lock()
 	delete(messages.logs, topicname)
 	messages.Unlock()
 
-	// Remove related offsets
 	offsets.Lock()
 	for key := range offsets.positions {
 		if key[:len(topicname)] == topicname {
@@ -92,6 +102,10 @@ func DeleteTopic(topicname string) error {
 		}
 	}
 	offsets.Unlock()
+
+	topicConsumers.Lock()
+	delete(topicConsumers.subscribers, topicname)
+	topicConsumers.Unlock()
 
 	return nil
 }
@@ -111,7 +125,6 @@ func CreateConsumer(consumer, topicname string) error {
 	}
 
 	consumers.Lock()
-	// Check if consumer exists
 	exists := false
 	_, exists = consumers.items[consumer]
 
@@ -120,11 +133,17 @@ func CreateConsumer(consumer, topicname string) error {
 	}
 	consumers.Unlock()
 
-	// Initialize offset
 	offsets.Lock()
 	key := fmt.Sprintf("%s:%s", topicname, consumer)
 	offsets.positions[key] = 0
 	offsets.Unlock()
+
+	topicConsumers.Lock()
+	if _, ok := topicConsumers.subscribers[topicname]; !ok {
+		topicConsumers.subscribers[topicname] = make(map[string]struct{})
+	}
+	topicConsumers.subscribers[topicname][consumer] = struct{}{}
+	topicConsumers.Unlock()
 
 	return nil
 }
@@ -150,21 +169,47 @@ func DeleteConsumer(consumername string) error {
 		return nil
 	}
 	delete(consumers.items, consumername)
-	// Remove consumer offsets
+
 	offsets.Lock()
 	for key := range offsets.positions {
-		if key[len(key)-len(consumername):] == consumername {
+		parts := strings.SplitN(key, ":", 2)
+		if len(parts) == 2 && parts[1] == consumername {
 			delete(offsets.positions, key)
 		}
 	}
 	offsets.Unlock()
 
+	// Remove from topicConsumers index
+	topicConsumers.Lock()
+	for _, subs := range topicConsumers.subscribers {
+		delete(subs, consumername)
+	}
+	topicConsumers.Unlock()
+
 	return nil
+}
+
+// GetConsumersByTopic returns all consumer IDs subscribed to the given topic
+func GetConsumersByTopic(topicname string) ([]string, error) {
+	topics.RLock()
+	_, exists := topics.items[topicname]
+	topics.RUnlock()
+	if !exists {
+		return nil, fmt.Errorf("topic %s does not exist", topicname)
+	}
+
+	topicConsumers.RLock()
+	defer topicConsumers.RUnlock()
+	subs := topicConsumers.subscribers[topicname]
+	result := make([]string, 0, len(subs))
+	for c := range subs {
+		result = append(result, c)
+	}
+	return result, nil
 }
 
 // SetOffset updates a consumer's position in a topic
 func SetOffset(consumer, topic string, value int) error {
-	// Check if topic exists
 	topics.RLock()
 	topicExists := false
 	_, topicExists = topics.items[topic]
@@ -184,7 +229,6 @@ func SetOffset(consumer, topic string, value int) error {
 
 // GetOffset retrieves a consumer's position in a topic
 func GetOffset(consumer, topic string) (int, error) {
-	// Check if topic exists
 	topics.RLock()
 	topicExists := false
 	_, topicExists = topics.items[topic]
@@ -208,7 +252,6 @@ func GetOffset(consumer, topic string) (int, error) {
 
 // AppendToLog adds a message to a topic's message log
 func AppendToLog(topic, message string) error {
-	// Check if topic exists
 	topics.RLock()
 	topicExists := false
 	_, topicExists = topics.items[topic]
@@ -277,8 +320,9 @@ func RestoreStore(newTopics []string, newConsumers []string, newMessages map[str
 	defer messages.Unlock()
 	offsets.Lock()
 	defer offsets.Unlock()
+	topicConsumers.Lock()
+	defer topicConsumers.Unlock()
 
-	// Handle nil initialization to be safe
 	if newTopics == nil {
 		newTopics = make([]string, 0)
 	}
@@ -302,8 +346,24 @@ func RestoreStore(newTopics []string, newConsumers []string, newMessages map[str
 		newConsumerItems[val] = 1
 	}
 
+	// Rebuild topicConsumers index from the offsets map ("topic:consumer" keys)
+	newSubscribers := make(map[string]map[string]struct{})
+	for _, t := range newTopics {
+		newSubscribers[t] = make(map[string]struct{})
+	}
+	for key := range newOffsets {
+		for _, t := range newTopics {
+			prefix := t + ":"
+			if len(key) > len(prefix) && key[:len(prefix)] == prefix {
+				consumerID := key[len(prefix):]
+				newSubscribers[t][consumerID] = struct{}{}
+			}
+		}
+	}
+
 	topics.items = newTopicItems
 	consumers.items = newConsumerItems
 	messages.logs = newMessages
 	offsets.positions = newOffsets
+	topicConsumers.subscribers = newSubscribers
 }

@@ -19,6 +19,7 @@ func ConsumeRoute(v1router *gin.RouterGroup) {
 	v1router.GET("/consume/ping", temp)
 	v1router.POST("/consumer", consume.CreateConsumer)
 	v1router.GET("/consumer", consume.GetConsumers)
+	v1router.GET("/consumer/topic", consume.GetConsumersByTopic)
 	v1router.GET("/offset", consume.GetOffset)
 	v1router.DELETE("/consumer", consume.DeleteConsumer)
 }

@@ -95,3 +95,18 @@ func DeleteConsumer(c *gin.Context) {
 	}
 	c.JSON(http.StatusAccepted, gin.H{"message": fmt.Sprintf("consumer id %v deleted", consumerId)})
 }
+
+func GetConsumersByTopic(c *gin.Context) {
+	topicname := c.Query("topicname")
+	if topicname == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "topicname query param is required"})
+		return
+	}
+	consumers, err := store.GetConsumersByTopic(topicname)
+	if err != nil {
+		log.Printf("server error : %v", err)
+		c.JSON(http.StatusNotFound, gin.H{"message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"topicname": topicname, "consumers": consumers})
+}

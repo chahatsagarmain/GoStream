@@ -31,6 +31,10 @@ func GetConsumers() ([]string, error) {
 	return consumers, nil
 }
 
+func GetConsumersByTopic(topicname string) ([]string, error) {
+	return memstore.GetConsumersByTopic(topicname)
+}
+
 func DeleteConsumer(consumername string) error {
 	return memstore.DeleteConsumer(consumername)
 }
