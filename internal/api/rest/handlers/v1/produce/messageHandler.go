@@ -16,10 +16,9 @@ type messageBody struct {
 }
 
 type publishMessageBody struct {
-	Message    string `json:"message" binding:"required"`
-	Topicname  string `json:"topicname" binding:"required"`
+	Message   string `json:"message" binding:"required"`
+	Topicname string `json:"topicname" binding:"required"`
 }
-
 
 func FetchMessage(c *gin.Context) {
 	body := messageBody{
