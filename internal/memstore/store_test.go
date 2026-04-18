@@ -3,9 +3,214 @@ package memstore
 import (
 	"fmt"
 	"math/rand"
+	"reflect"
 	"strconv"
 	"testing"
 )
+
+func TestCreateTopic(t *testing.T) {
+	Reset()
+
+	err := CreateTopic("topic1")
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	topics := GetTopics()
+	if len(topics) != 1 || topics[0] != "topic1" {
+		t.Fatalf("expected [topic1], got %v", topics)
+	}
+
+	// Test creating existing topic (should ignore)
+	err = CreateTopic("topic1")
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	topics = GetTopics()
+	if len(topics) != 1 {
+		t.Fatalf("expected 1 topic, got %d", len(topics))
+	}
+}
+
+func TestDeleteTopic(t *testing.T) {
+	Reset()
+
+	CreateTopic("topic1")
+	CreateConsumer("consumer1", "topic1")
+	AppendToLog("topic1", "msg1")
+
+	topics := GetTopics()
+	if len(topics) != 1 {
+		t.Fatalf("expected 1 topic, got %d", len(topics))
+	}
+
+	err := DeleteTopic("topic1")
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	topics = GetTopics()
+	if len(topics) != 0 {
+		t.Fatalf("expected 0 topics, got %d", len(topics))
+	}
+
+	// Make sure messages are deleted
+	msgs := GetAllMessages()
+	if len(msgs) != 0 {
+		t.Fatalf("expected 0 messages left, got %d", len(msgs))
+	}
+
+	// Make sure offsets are deleted
+	offs := GetAllOffsets()
+	if len(offs) != 0 {
+		t.Fatalf("expected 0 offsets left, got %d", len(offs))
+	}
+}
+
+func TestCreateConsumer(t *testing.T) {
+	Reset()
+
+	// Topic doesn't exist
+	err := CreateConsumer("consumer1", "topic1")
+	if err == nil {
+		t.Fatal("expected error creating consumer for non-existent topic, got nil")
+	}
+
+	CreateTopic("topic1")
+	err = CreateConsumer("consumer1", "topic1")
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	consumers := GetConsumers()
+	if len(consumers) != 1 || consumers[0] != "consumer1" {
+		t.Fatalf("expected [consumer1], got %v", consumers)
+	}
+
+	offset, err := GetOffset("consumer1", "topic1")
+	if err != nil || offset != 0 {
+		t.Fatalf("expected offset 0, got %v with string err %v", offset, err)
+	}
+}
+
+func TestDeleteConsumer(t *testing.T) {
+	Reset()
+
+	CreateTopic("topic1")
+	CreateConsumer("consumer1", "topic1")
+	SetOffset("consumer1", "topic1", 5)
+
+	err := DeleteConsumer("consumer1")
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	offs := GetAllOffsets()
+	if len(offs) != 0 {
+		t.Fatalf("expected 0 offsets left, got %v", offs)
+	}
+
+	consumers := GetConsumers()
+	if len(consumers) != 0 {
+		t.Fatalf("expected 0 consumers left, got %v", consumers)
+	}
+}
+
+func TestAppendAndGetMessage(t *testing.T) {
+	Reset()
+
+	CreateTopic("topic1")
+	CreateConsumer("consumer1", "topic1")
+
+	// Empty log
+	_, err := GetMessageFromLog("consumer1", "topic1")
+	if err == nil {
+		t.Fatal("expected error getting message from empty log, got nil")
+	}
+
+	AppendToLog("topic1", "hello")
+	AppendToLog("topic1", "world")
+
+	msg, err := GetMessageFromLog("consumer1", "topic1")
+	if err != nil || msg != "hello" {
+		t.Fatalf("expected hello, got %s with err %v", msg, err)
+	}
+
+	msg, err = GetMessageFromLog("consumer1", "topic1")
+	if err != nil || msg != "world" {
+		t.Fatalf("expected world, got %s with err %v", msg, err)
+	}
+
+	// Should be out of bounds now
+	_, err = GetMessageFromLog("consumer1", "topic1")
+	if err == nil {
+		t.Fatal("expected error getting message out of bounds, got nil")
+	}
+
+	// Offset should have moved to 2
+	offset, _ := GetOffset("consumer1", "topic1")
+	if offset != 2 {
+		t.Fatalf("expected offset 2, got %d", offset)
+	}
+}
+
+func TestSetAndGetOffset(t *testing.T) {
+	Reset()
+
+	CreateTopic("t1")
+	CreateConsumer("c1", "t1")
+
+	err := SetOffset("c1", "t1", 42)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	off, err := GetOffset("c1", "t1")
+	if err != nil || off != 42 {
+		t.Fatalf("expected 42, got %d with err %v", off, err)
+	}
+
+	// Test non-existent topic
+	err = SetOffset("c1", "tunknown", 10)
+	if err == nil {
+		t.Fatal("expected error for non-existent topic")
+	}
+}
+
+func TestRestoreStore(t *testing.T) {
+	Reset()
+
+	topics := []string{"t1", "t2"}
+	consumers := []string{"c1"}
+	messages := map[string][]string{
+		"t1": {"m1", "m2"},
+	}
+	offsets := map[string]int{
+		"t1:c1": 2,
+	}
+
+	RestoreStore(topics, consumers, messages, offsets)
+
+	tops := GetTopics()
+	if len(tops) != 2 {
+		t.Fatalf("expected 2 topics, got %d", len(tops))
+	}
+
+	cons := GetConsumers()
+	if len(cons) != 1 || cons[0] != "c1" {
+		t.Fatalf("expected [c1], got %v", cons)
+	}
+
+	allMsgs := GetAllMessages()
+	if !reflect.DeepEqual(allMsgs, messages) {
+		t.Fatalf("expected %v, got %v", messages, allMsgs)
+	}
+
+	allOffs := GetAllOffsets()
+	if !reflect.DeepEqual(allOffs, offsets) {
+		t.Fatalf("expected %v, got %v", offsets, allOffs)
+	}
+}
 
 func BenchmarkCreateTopic(b *testing.B) {
 	b.ResetTimer()
@@ -59,15 +264,15 @@ func BenchmarkGetMessageFromLog(b *testing.B) {
 func BenchmarkGetMessageFromLogParallel(b *testing.B) {
 	topic := "bench-topic-get-parallel"
 	CreateTopic(topic)
-	
+
 	for i := 0; i < b.N; i++ {
 		AppendToLog(topic, "test message")
 	}
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
-		// Create a separate consumer for each goroutine to avoid race 
-		// condition on reading the same offset simultaneously causing 
+		// Create a separate consumer for each goroutine to avoid race
+		// condition on reading the same offset simultaneously causing
 		// "offset out of bounds" errors if incremented ungracefully
 		consumer := "consumer-parallel-" + strconv.Itoa(rand.Int())
 		CreateConsumer(consumer, topic)
@@ -86,7 +291,7 @@ func BenchmarkGetTopics(b *testing.B) {
 	for i := 0; i < 1000; i++ {
 		CreateTopic(fmt.Sprintf("topic-get-%d", i))
 	}
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		GetTopics()
@@ -106,7 +311,7 @@ func BenchmarkCapacity_10kTopics(b *testing.B) {
 		b.StopTimer()
 		prefix := fmt.Sprintf("cap10k-%d-", i)
 		b.StartTimer()
-		
+
 		for j := 0; j < 10000; j++ {
 			CreateTopic(prefix + strconv.Itoa(j))
 		}
@@ -144,7 +349,7 @@ func BenchmarkCapacity_10kConsumers(b *testing.B) {
 	}
 }
 
-// BenchmarkCapacity_MixedWorkload tests a realistic mixed workload 
+// BenchmarkCapacity_MixedWorkload tests a realistic mixed workload
 // of creating a large number of topics and immediately appending messages to them.
 func BenchmarkCapacity_MixedWorkload(b *testing.B) {
 	b.ResetTimer()
@@ -177,7 +382,7 @@ func BenchmarkCapacity_FullMix(b *testing.B) {
 		for j := 0; j < 100; j++ {
 			topic := prefix + strconv.Itoa(j)
 			CreateTopic(topic)
-			
+
 			// Create 10 consumers per topic
 			var consumers []string
 			for c := 0; c < 10; c++ {
@@ -204,5 +409,19 @@ func BenchmarkCapacity_FullMix(b *testing.B) {
 	}
 }
 
+// Reset clears all state, useful for testing
+func Reset() {
+	topics.Lock()
+	defer topics.Unlock()
+	consumers.Lock()
+	defer consumers.Unlock()
+	messages.Lock()
+	defer messages.Unlock()
+	offsets.Lock()
+	defer offsets.Unlock()
 
-
+	topics.items = make(map[string]int)
+	consumers.items = make(map[string]int)
+	messages.logs = make(map[string][]string)
+	offsets.positions = make(map[string]int)
+}

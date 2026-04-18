@@ -9,17 +9,17 @@ var (
 	// topics is a list of all topics
 	topics = struct {
 		sync.RWMutex
-		items []string
+		items map[string]int
 	}{
-		items: make([]string, 0),
+		items: make(map[string]int),
 	}
 
 	// consumers is a list of all consumers
 	consumers = struct {
 		sync.RWMutex
-		items []string
+		items map[string]int
 	}{
-		items: make([]string, 0),
+		items: make(map[string]int),
 	}
 
 	// messages stores topic messages as append-only logs
@@ -45,13 +45,11 @@ func CreateTopic(topicname string) error {
 	defer topics.Unlock()
 
 	// Check if topic exists
-	for _, t := range topics.items {
-		if t == topicname {
-			return nil // already exists
-		}
+	if _, exists := topics.items[topicname]; exists {
+		return nil
 	}
 
-	topics.items = append(topics.items, topicname)
+	topics.items[topicname] = 1
 
 	// Initialize message log for topic
 	messages.Lock()
@@ -66,8 +64,11 @@ func GetTopics() []string {
 	topics.RLock()
 	defer topics.RUnlock()
 
-	result := make([]string, len(topics.items))
-	copy(result, topics.items)
+	result := make([]string, 0, len(topics.items))
+	for key, _ := range topics.items {
+		result = append(result, key)
+	}
+
 	return result
 }
 
@@ -76,19 +77,7 @@ func DeleteTopic(topicname string) error {
 	topics.Lock()
 	defer topics.Unlock()
 
-	found := false
-	for i, t := range topics.items {
-		if t == topicname {
-			// Remove from topics list
-			topics.items = append(topics.items[:i], topics.items[i+1:]...)
-			found = true
-			break
-		}
-	}
-
-	if !found {
-		return nil
-	}
+	delete(topics.items, topicname)
 
 	// Remove messages
 	messages.Lock()
@@ -112,12 +101,9 @@ func CreateConsumer(consumer, topicname string) error {
 	// Check if topic exists
 	topics.RLock()
 	topicExists := false
-	for _, t := range topics.items {
-		if t == topicname {
-			topicExists = true
-			break
-		}
-	}
+
+	_, topicExists = topics.items[topicname]
+
 	topics.RUnlock()
 
 	if !topicExists {
@@ -127,15 +113,10 @@ func CreateConsumer(consumer, topicname string) error {
 	consumers.Lock()
 	// Check if consumer exists
 	exists := false
-	for _, c := range consumers.items {
-		if c == consumer {
-			exists = true
-			break
-		}
-	}
+	_, exists = consumers.items[consumer]
 
 	if !exists {
-		consumers.items = append(consumers.items, consumer)
+		consumers.items[consumer] = 1
 	}
 	consumers.Unlock()
 
@@ -153,8 +134,10 @@ func GetConsumers() []string {
 	consumers.RLock()
 	defer consumers.RUnlock()
 
-	result := make([]string, len(consumers.items))
-	copy(result, consumers.items)
+	result := make([]string, 0, len(consumers.items))
+	for key := range consumers.items {
+		result = append(result, key)
+	}
 	return result
 }
 
@@ -163,19 +146,10 @@ func DeleteConsumer(consumername string) error {
 	consumers.Lock()
 	defer consumers.Unlock()
 
-	found := false
-	for i, c := range consumers.items {
-		if c == consumername {
-			consumers.items = append(consumers.items[:i], consumers.items[i+1:]...)
-			found = true
-			break
-		}
-	}
-
-	if !found {
+	if _, found := consumers.items[consumername]; !found {
 		return nil
 	}
-
+	delete(consumers.items, consumername)
 	// Remove consumer offsets
 	offsets.Lock()
 	for key := range offsets.positions {
@@ -193,12 +167,7 @@ func SetOffset(consumer, topic string, value int) error {
 	// Check if topic exists
 	topics.RLock()
 	topicExists := false
-	for _, t := range topics.items {
-		if t == topic {
-			topicExists = true
-			break
-		}
-	}
+	_, topicExists = topics.items[topic]
 	topics.RUnlock()
 
 	if !topicExists {
@@ -218,12 +187,7 @@ func GetOffset(consumer, topic string) (int, error) {
 	// Check if topic exists
 	topics.RLock()
 	topicExists := false
-	for _, t := range topics.items {
-		if t == topic {
-			topicExists = true
-			break
-		}
-	}
+	_, topicExists = topics.items[topic]
 	topics.RUnlock()
 
 	if !topicExists {
@@ -247,12 +211,7 @@ func AppendToLog(topic, message string) error {
 	// Check if topic exists
 	topics.RLock()
 	topicExists := false
-	for _, t := range topics.items {
-		if t == topic {
-			topicExists = true
-			break
-		}
-	}
+	_, topicExists = topics.items[topic]
 	topics.RUnlock()
 
 	if !topicExists {
@@ -333,9 +292,18 @@ func RestoreStore(newTopics []string, newConsumers []string, newMessages map[str
 		newOffsets = make(map[string]int)
 	}
 
-	topics.items = newTopics
-	consumers.items = newConsumers
+	newTopicItems := make(map[string]int)
+	for _, val := range newTopics {
+		newTopicItems[val] = 1
+	}
+
+	newConsumerItems := make(map[string]int)
+	for _, val := range newConsumers {
+		newConsumerItems[val] = 1
+	}
+
+	topics.items = newTopicItems
+	consumers.items = newConsumerItems
 	messages.logs = newMessages
 	offsets.positions = newOffsets
 }
-

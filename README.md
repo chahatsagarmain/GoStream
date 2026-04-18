@@ -118,19 +118,30 @@ GoStream's in-memory storage includes extensive capacity benchmarks located in `
 
 **To run the benchmarks:**
 ```bash
-cd internal/memstore
-go test -bench=BenchmarkCapacity -benchmem .
+go test -bench . -benchmem ./internal/memstore
 ```
 
-### Capacity Overview (Full Mixed Workload)
-A full round-trip evaluation tests the scenario of repeatedly spinning up 100 topics, attaching 1,000 active consumers, publishing 10,000 messages, and tracking 100,000 sequential offset reads.
+### Latest Benchmark Report
 
-- **Speed**: The system processes 100k reads and 10k writes linearly in roughly **~500ms** on average mid-tier hardware.
-- **Bottlenecks**:
-  - `topics` and `consumers` check for existence using slices instead of maps. This behaves linearly ($O(N)$) and degrades registration speed drastically for topologies past 10,000 topics.
-  - Per-message consumer offsets (using `"topic:consumer"` dictionary keys) incur high garbage collection overhead due to runtime string concatenation.
+| Benchmark | Iterations | Time (ns/op) | Memory (B/op) | Allocs (allocs/op) |
+| :--- | ---: | ---: | ---: | ---: |
+| `BenchmarkCreateTopic` | 4,048,650 | 1,205 | 255 | 2 |
+| `BenchmarkAppendToLog` | 9,485,460 | 175.2 | 99 | 0 |
+| `BenchmarkAppendToLogParallel` | 5,196,242 | 224.7 | 84 | 0 |
+| `BenchmarkGetMessageFromLog` | 2,137,838 | 524.4 | 160 | 6 |
+| `BenchmarkGetMessageFromLogParallel` | 2,235,476 | 584.9 | 192 | 6 |
+| `BenchmarkGetTopics` | 14 | 90,106,971 | 64,798,720 | 1 |
+| `BenchmarkCapacity_10kTopics` | 235 | 6,189,460 | 197,655 | 19,900 |
+| `BenchmarkCapacity_100kMessages` | 100 | 10,753,486 | 8,179,548 | 0 |
+| `BenchmarkCapacity_10kConsumers` | 100 | 15,391,043 | 3,213,052 | 50,062 |
+| `BenchmarkCapacity_MixedWorkload` | 100 | 10,597,317 | 4,488,109 | 9,830 |
+| `BenchmarkCapacity_FullMix` | 25 | 48,891,428 | 11,767,885 | 605,200 |
 
-To-Do : Swap Map inplace of slice 
+### Capacity Overview
+Since upgrading the internal metadata structures from slices ($O(N)$) to constant-time hash tables (`map[string]int`), operation throughput has massively improved! 
+
+A full mixed round-trip evaluation (`BenchmarkCapacity_FullMix`)—modeling the instantiation of 100 topics, 1,000 active consumers, 10,000 published messages, and 100,000 parallel sequential reads—now clears in collectively under **~49ms** (vs ~500ms on strings/slices previously).
+
 Contributing
 - Pull requests welcome. Create an issue or PR for larger changes.
 
