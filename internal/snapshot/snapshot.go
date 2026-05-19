@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chahatsagarmain/GoStream/config"
 	"github.com/chahatsagarmain/GoStream/internal/memstore"
 )
 
@@ -36,7 +37,7 @@ func (s *SnapShot) StartSnapShot() {
 			if err := s.saveSnapShot(); err != nil {
 				fmt.Printf("Failed to save snapshot: %v\n", err)
 			}
-			time.Sleep(10 * time.Second)
+			time.Sleep(time.Duration(config.SNAPSHOT_DURATION) * time.Second)
 		}
 	}()
 }

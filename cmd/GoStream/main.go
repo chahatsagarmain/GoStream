@@ -8,6 +8,7 @@ import (
 	// "time"
 
 	"github.com/chahatsagarmain/GoStream/api/rest"
+	"github.com/chahatsagarmain/GoStream/config"
 	grpcserver "github.com/chahatsagarmain/GoStream/internal/grpc"
 	"github.com/chahatsagarmain/GoStream/internal/memstore"
 	"github.com/chahatsagarmain/GoStream/internal/mock"
@@ -16,6 +17,8 @@ import (
 
 func main() {
 	var wg sync.WaitGroup
+
+	config.LoadConfig()
 
 	// Automatically inject our mock data so the stream doesn't boot empty
 	mock.PopulateStore()
