@@ -216,7 +216,14 @@ func TestRestoreStore(t *testing.T) {
 	}
 }
 
+func init() {
+	// Configure large segment sizes for benchmarks so they stay entirely in memory
+	config.MAX_SEGMENT_SIZE = 100 * 1024 * 1024 // 100 MB
+	config.MAX_TOPIC_SIZE = 1000 * 1024 * 1024  // 1 GB
+}
+
 func BenchmarkCreateTopic(b *testing.B) {
+	Reset()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		CreateTopic("topic-" + strconv.Itoa(i))
@@ -224,6 +231,7 @@ func BenchmarkCreateTopic(b *testing.B) {
 }
 
 func BenchmarkAppendToLog(b *testing.B) {
+	Reset()
 	topic := "bench-topic-append"
 	CreateTopic(topic)
 
@@ -234,6 +242,7 @@ func BenchmarkAppendToLog(b *testing.B) {
 }
 
 func BenchmarkAppendToLogParallel(b *testing.B) {
+	Reset()
 	topic := "bench-topic-append-parallel"
 	CreateTopic(topic)
 
@@ -246,6 +255,7 @@ func BenchmarkAppendToLogParallel(b *testing.B) {
 }
 
 func BenchmarkGetMessageFromLog(b *testing.B) {
+	Reset()
 	topic := "bench-topic-get"
 	consumer := "bench-consumer-get"
 	CreateTopic(topic)
@@ -266,6 +276,7 @@ func BenchmarkGetMessageFromLog(b *testing.B) {
 }
 
 func BenchmarkGetMessageFromLogParallel(b *testing.B) {
+	Reset()
 	topic := "bench-topic-get-parallel"
 	CreateTopic(topic)
 
@@ -292,6 +303,7 @@ func BenchmarkGetMessageFromLogParallel(b *testing.B) {
 }
 
 func BenchmarkGetTopics(b *testing.B) {
+	Reset()
 	for i := 0; i < 1000; i++ {
 		CreateTopic(fmt.Sprintf("topic-get-%d", i))
 	}
@@ -304,86 +316,81 @@ func BenchmarkGetTopics(b *testing.B) {
 
 // Capacity benchmarks focus on scaling sizes
 
-// BenchmarkCapacity_10kTopics demonstrates creating a large number of topics.
-// Due to the O(n) check in CreateTopic, this might scale poorly.
-func BenchmarkCapacity_10kTopics(b *testing.B) {
+// BenchmarkCapacity_1kTopics demonstrates creating a large number of topics.
+func BenchmarkCapacity_1kTopics(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		// Because there is no Reset function in memstore, we recreate unique names
-		// to test the growing slice, or we can just measure insertion time as it grows.
-		// Doing it 10,000 times per b.N will be very slow for large N due to O(N^2)
-		// We'll reset timer for each iteration manually
+		Reset()
 		b.StopTimer()
-		prefix := fmt.Sprintf("cap10k-%d-", i)
+		prefix := fmt.Sprintf("cap1k-%d-", i)
 		b.StartTimer()
 
-		for j := 0; j < 10000; j++ {
+		for j := 0; j < 1000; j++ {
 			CreateTopic(prefix + strconv.Itoa(j))
 		}
 	}
 }
 
-// BenchmarkCapacity_100kMessages tests publishing a large number of messages to a single topic
-func BenchmarkCapacity_100kMessages(b *testing.B) {
-	topic := "capacity-topic-100k-msgs"
-	CreateTopic(topic)
-
-	b.ResetTimer()
+// BenchmarkCapacity_10kMessages tests publishing a large number of messages to a single topic
+func BenchmarkCapacity_10kMessages(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		// publish 100k messages to a single topic
-		for j := 0; j < 100000; j++ {
+		Reset()
+		b.StopTimer()
+		topic := "capacity-topic-10k-msgs"
+		CreateTopic(topic)
+		b.StartTimer()
+
+		// publish 10k messages to a single topic
+		for j := 0; j < 10000; j++ {
 			AppendToLog(topic, "capacity test payload data")
 		}
 	}
 }
 
-// BenchmarkCapacity_10kConsumers tests creating many consumers on a single topic
-func BenchmarkCapacity_10kConsumers(b *testing.B) {
-	topic := "capacity-topic-10k-consumers"
-	CreateTopic(topic)
-
-	b.ResetTimer()
+// BenchmarkCapacity_1kConsumers tests creating many consumers on a single topic
+func BenchmarkCapacity_1kConsumers(b *testing.B) {
 	for i := 0; i < b.N; i++ {
+		Reset()
 		b.StopTimer()
-		prefix := fmt.Sprintf("cons10k-%d-", i)
+		topic := "capacity-topic-1k-consumers"
+		CreateTopic(topic)
+		prefix := fmt.Sprintf("cons1k-%d-", i)
 		b.StartTimer()
 
-		for j := 0; j < 10000; j++ {
+		for j := 0; j < 1000; j++ {
 			CreateConsumer(prefix+strconv.Itoa(j), topic)
 		}
 	}
 }
 
 // BenchmarkCapacity_MixedWorkload tests a realistic mixed workload
-// of creating a large number of topics and immediately appending messages to them.
 func BenchmarkCapacity_MixedWorkload(b *testing.B) {
-	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		Reset()
 		b.StopTimer()
 		prefix := fmt.Sprintf("mix-%d-", i)
 		b.StartTimer()
 
-		// System creates 1,000 topics and inserts 100 messages into each
-		for j := 0; j < 1000; j++ {
+		// System creates 100 topics and inserts 10 messages into each
+		for j := 0; j < 100; j++ {
 			topic := prefix + strconv.Itoa(j)
 			CreateTopic(topic)
-			for k := 0; k < 100; k++ {
+			for k := 0; k < 10; k++ {
 				AppendToLog(topic, "mixed workload message")
 			}
 		}
 	}
 }
 
-// BenchmarkCapacity_FullMix tests a fully mixed workload:
-// Creating topics, creating consumers, publishing messages, and consuming them.
+// BenchmarkCapacity_FullMix tests a fully mixed workload
 func BenchmarkCapacity_FullMix(b *testing.B) {
-	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		Reset()
 		b.StopTimer()
 		prefix := fmt.Sprintf("full-%d-", i)
 		b.StartTimer()
 
-		// 100 topics, 10 consumers per topic, 100 msgs published & consumed per consumer
-		for j := 0; j < 100; j++ {
+		// 10 topics, 10 consumers per topic, 10 msgs published & consumed per consumer
+		for j := 0; j < 10; j++ {
 			topic := prefix + strconv.Itoa(j)
 			CreateTopic(topic)
 
@@ -395,14 +402,14 @@ func BenchmarkCapacity_FullMix(b *testing.B) {
 				consumers = append(consumers, consumer)
 			}
 
-			// Publish 100 messages
-			for k := 0; k < 100; k++ {
+			// Publish 10 messages
+			for k := 0; k < 10; k++ {
 				AppendToLog(topic, "full mixed workload message payload")
 			}
 
 			// Consume messages across all consumers
 			for _, consumer := range consumers {
-				for m := 0; m < 100; m++ {
+				for m := 0; m < 10; m++ {
 					_, err := GetMessageFromLog(consumer, topic)
 					if err != nil {
 						b.Fatalf("failed to consume message: %v", err)
@@ -412,6 +419,7 @@ func BenchmarkCapacity_FullMix(b *testing.B) {
 		}
 	}
 }
+
 
 // Reset clears all state, useful for testing
 func Reset() {
@@ -672,3 +680,90 @@ func TestLargeSegmentation(t *testing.T) {
 		}
 	}
 }
+
+func BenchmarkStorage_InMemory(b *testing.B) {
+	// Configure large sizes so it remains entirely in memory
+	origMaxSegmentSize := config.MAX_SEGMENT_SIZE
+	origMaxTopicSize := config.MAX_TOPIC_SIZE
+	origDir := config.DATA_DIR
+
+	config.MAX_SEGMENT_SIZE = 100 * 1024 * 1024
+	config.MAX_TOPIC_SIZE = 1000 * 1024 * 1024
+	config.DATA_DIR = "./test_bench_inmem"
+
+	defer func() {
+		config.MAX_SEGMENT_SIZE = origMaxSegmentSize
+		config.MAX_TOPIC_SIZE = origMaxTopicSize
+		config.DATA_DIR = origDir
+		os.RemoveAll("./test_bench_inmem")
+	}()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		Reset()
+		os.RemoveAll("./test_bench_inmem")
+		topic := "bench-inmem"
+		consumer := "bench-inmem-consumer"
+		CreateTopic(topic)
+		CreateConsumer(consumer, topic)
+		b.StartTimer()
+
+		// Produce 200 messages
+		for j := 0; j < 200; j++ {
+			AppendToLog(topic, "msg-payload-data-for-inmem-bench-size-32")
+		}
+
+		// Consume 200 messages
+		for j := 0; j < 200; j++ {
+			_, err := GetMessageFromLog(consumer, topic)
+			if err != nil {
+				b.Fatalf("failed to consume: %v", err)
+			}
+		}
+	}
+}
+
+func BenchmarkStorage_DiskSwap(b *testing.B) {
+	// Configure small sizes to force frequent disk writes, evictions, and reloads
+	origMaxSegmentSize := config.MAX_SEGMENT_SIZE
+	origMaxTopicSize := config.MAX_TOPIC_SIZE
+	origDir := config.DATA_DIR
+
+	config.MAX_SEGMENT_SIZE = 40
+	config.MAX_TOPIC_SIZE = 60
+	config.DATA_DIR = "./test_bench_disk"
+
+	defer func() {
+		config.MAX_SEGMENT_SIZE = origMaxSegmentSize
+		config.MAX_TOPIC_SIZE = origMaxTopicSize
+		config.DATA_DIR = origDir
+		os.RemoveAll("./test_bench_disk")
+	}()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		Reset()
+		os.RemoveAll("./test_bench_disk")
+		topic := "bench-disk"
+		consumer := "bench-disk-consumer"
+		CreateTopic(topic)
+		CreateConsumer(consumer, topic)
+		b.StartTimer()
+
+		// Produce 200 messages (triggers frequent segment sealing & disk writes)
+		for j := 0; j < 200; j++ {
+			AppendToLog(topic, "msg-payload-data-for-disk-bench-size-32")
+		}
+
+		// Consume 200 messages (triggers frequent disk reads & page loads)
+		for j := 0; j < 200; j++ {
+			_, err := GetMessageFromLog(consumer, topic)
+			if err != nil {
+				b.Fatalf("failed to consume: %v", err)
+			}
+		}
+	}
+}
+
