@@ -72,31 +72,142 @@ How it works
 High level flow
 - Clients talk to the service via either the REST API (Gin) or the gRPC API (protobuf + gRPC).
 - Both REST handlers and gRPC methods delegate to the internal `store` package. `internal/store` is a small wrapper that currently forwards to the in-memory implementation in `internal/memstore`.
-- The `memstore` package holds the in-memory data structures: a list of topics, a list of consumers, per-topic append-only message logs, and per-consumer offsets for each topic.
+- The `memstore` package holds the in-memory data structures: a list of topics, a list of consumers, segmented and evictable message logs for each topic, and per-consumer offsets.
 
 Core data structures
 - `topics`: `map[string]int` — set of topic names.
 - `consumers`: `map[string]int` — set of consumer IDs.
-- `messages`: `map[string][]string` — mapping topic name -> append-only slice of messages.
+- `topicLogs`: `map[string]*types.TopicLog` — mapping topic name to its segmented log. A topic log is split into one or more `Segment` structs:
+  - `Segment` holds `Id`, `Messages` (slice of strings), `Count` (message count), `Size` (byte size), `BaseOffset` (first offset in the segment), and a `Loaded` status flag.
 - `offsets`: `map[string]int` — mapping `"topic:consumer"` to the consumer's next-read offset.
-- `topicConsumers`: `map[string]map[string]struct{}` — mapping topic name -> set of subscribed consumer IDs. Enables O(1) lookup of all consumers for a given topic.
+- `topicConsumers`: `map[string]map[string]int` — mapping topic name -> set of subscribed consumer IDs. Enables O(1) lookup of all consumers for a given topic.
 
 > [!NOTE]
 > Topic names may **not contain `:`** since it is used as the delimiter in offset keys (`"topic:consumer"`).
 
+Segmented Storage & Memory Eviction (Deep Dive)
+-----------------------------------------------
+
+GoStream implements a segmented storage engine designed to provide rapid in-memory operations while ensuring bounded memory usage and complete data durability. 
+
+Here is how segmentation, sealing, eviction, and retrieval work under the hood:
+
+### 1. Segmentation & Sealing (Append Stage)
+
+All writes (appends) target the **active segment** (the last segment in the slice).
+
+```
+                      +-----------------------------+
+                      |    Append "New Message"     |
+                      +--------------+--------------+
+                                     |
+                                     ▼
+                      +-----------------------------+
+                      |   Active Segment (Id: 0)    |
+                      |   - RAM: msg1, msg2, msg3   |
+                      |   - Size: 48B / Limit: 40B  |
+                      +--------------+--------------+
+                                     | (Size exceeds MAX_SEGMENT_SIZE)
+                                     ▼
+                      +-----------------------------+
+                      |       Seal Segment 0        |
+                      |   - Write to seg-0.log      |
+                      |   - Perform fsync()         |
+                      +--------------+--------------+
+                                     |
+                                     ▼
++-----------------------------+             +-----------------------------+
+|    Sealed Segment (Id: 0)   |             |   New Active Segment (Id:1) |
+|    - RAM: msg1, msg2, msg3  | <---------> |   - RAM: Empty              |
+|    - Disk: seg-0.log        |             |   - Size: 0B                |
++-----------------------------+             +-----------------------------+
+```
+
+* **Trigger**: When an append makes the active segment size $\ge$ `MAX_SEGMENT_SIZE`.
+* **Action**:
+  1. The active segment is **sealed** (it becomes immutable).
+  2. The segment is flushed to disk at `DATA_DIR/topics/<topic>/seg-<id>.log` using a temporary file rename pattern and an explicit `fsync()` system call for durability.
+  3. A new active segment with `Id = active.Id + 1` and `BaseOffset = active.BaseOffset + active.Count` is initialized in RAM.
+
+---
+
+### 2. Eviction (Memory Bounding Stage)
+
+To ensure that the application's RAM usage remains bounded regardless of topic size, older sealed segments are evicted from RAM.
+
+```
+Total Loaded RAM Size = [Seg 0 (48B)] + [Seg 1 (48B)] = 96B  (Limit: MAX_TOPIC_SIZE = 60B)
+                                     │
+                                     ▼
+                         +───────────────────────+
+                         | Evict Oldest Segments |
+                         +───────────┬───────────+
+                                     │
+                                     ▼
++─────────────────────────────+             +─────────────────────────────+
+|   Evicted Segment (Id: 0)   |             |    Sealed Segment (Id: 1)   |
+|   - RAM: nil (Messages Free) | <---------> |    - RAM: msg4, msg5, msg6  |
+|   - Disk: seg-0.log         |             |    - Disk: seg-1.log        |
++─────────────────────────────+             +─────────────────────────────+
+```
+
+* **Trigger**: After a segment is sealed or loaded, the system sums the sizes of all segments currently marked as `Loaded`. If this sum $\ge$ `MAX_TOPIC_SIZE`, eviction is triggered.
+* **Action**:
+  - The system iterates from the oldest segment (`Id = 0`) to the second newest segment (excluding the active segment).
+  - For each loaded segment, it frees the `Messages` slice (`Messages = nil`) and sets `Loaded = false`.
+  - This process stops as soon as the total loaded size falls below `MAX_TOPIC_SIZE`.
+
+---
+
+### 3. Retrieval & Transparent Loading (Consume Stage)
+
+When a consumer requests a message, the system resolves the request through a target segment based on the offset.
+
+```
+                             Consumer requests Offset: 2
+                                          │
+                                          ▼
+                       +────────────────────────────────────+
+                       |   Locate Segment containing Off:2  |
+                       |   - Finds Segment 0 (Evicted)      |
+                       +──────────────────┬─────────────────+
+                                          │
+                                          ▼
+                       +────────────────────────────────────+
+                       |        Load Segment 0              |
+                       |   - Read DATA_DIR/topics/seg-0.log |
+                       |   - Populates RAM messages         |
+                       |   - Set Loaded = true              |
+                       +──────────────────┬─────────────────+
+                                          │
+                                          ▼
+                       +────────────────────────────────────+
+                       |        Serve Message & Evict       |
+                       |   - Return message at offset 2     |
+                       |   - Run eviction if size exceeded  |
+                       +────────────────────────────────────+
+```
+
+* **Trigger**: A consumer reads a message at `offset`. The system identifies which segment covers the offset (`BaseOffset <= offset < BaseOffset + Count`).
+* **Action**:
+  1. If the target segment is evicted (`Loaded == false`), GoStream loads it back from the disk file `seg-<id>.log` into RAM.
+  2. The message is served from memory, and the consumer's offset is incremented.
+  3. `evictSealedSegments` is run again. If reloading this segment pushes the total loaded size back above `MAX_TOPIC_SIZE`, the segment (or other older segments) will be evicted once more.
+
+---
 Concurrency and safety
-- `memstore` uses simple RWMutexes to protect each top-level structure (topics, consumers, messages, offsets). This keeps operations safe for concurrent access.
+- `memstore` uses simple RWMutexes to protect each top-level structure (topics, consumers, topicLogs, offsets). This keeps operations safe for concurrent access.
 - When returning slices (e.g., `GetTopics`, `GetConsumers`) the code copies the slice header and backing data into a new slice before returning. This prevents callers from observing or mutating the store's internal backing arrays.
 
 Typical request flow (example)
-1. Create topic (REST/gRPC) -> `internal/store.CreateTopics` -> `memstore.CreateTopic` creates topic, initializes empty message log.
-2. Publish message (REST/gRPC) -> `internal/store.AppendToLog` -> `memstore.AppendToLog` appends to `messages[topic]`.
+1. Create topic (REST/gRPC) -> `internal/store.CreateTopics` -> `memstore.CreateTopic` creates topic, initializes empty topic log with a single active segment.
+2. Publish message (REST/gRPC) -> `internal/store.AppendToLog` -> `memstore.AppendToLog` appends to the active segment. If size exceeds `MAX_SEGMENT_SIZE`, the segment is sealed and written to disk. If total topic size exceeds `MAX_TOPIC_SIZE`, older sealed segments are evicted.
 3. Create consumer (REST/gRPC) -> `internal/store.CreateConsumer` -> `memstore.CreateConsumer` adds consumer and initializes `offsets["topic:consumer"] = 0`.
-4. Fetch (REST/gRPC) -> `internal/store.GetMessageFromLog` -> `memstore.GetMessageFromLog` reads `messages[topic][offset]`, increments offset with `memstore.SetOffset`.
+4. Fetch (REST/gRPC) -> `internal/store.GetMessageFromLog` -> `memstore.GetMessageFromLog` retrieves the message from the correct segment. If that segment is not currently loaded in memory, it is read back from disk. The offset is then incremented.
 
 Design notes
 - The wrapper `internal/store` isolates higher-level handlers from the concrete storage implementation. This makes it straightforward to swap in a persistent store (e.g., Redis or a database) in the future.
-- The in-memory approach is simple and fast for development, but not durable. For production you'd wire a persistent backend and rework some concurrency/atomicity details.
+- The segmented model combines the speed of in-memory messaging with the reliability of disk backups, allowing bounded RAM usage while preserving complete message histories.
 
 ### REST API Reference
 
@@ -139,26 +250,51 @@ GoStream's in-memory storage includes extensive capacity benchmarks located in `
 go test -bench . -benchmem ./internal/memstore
 ```
 
+### Benchmark Metrics Guide
+
+When viewing the reports below, the columns indicate the following metrics:
+- **Benchmark**: The name of the benchmark function executed.
+- **Iterations**: The number of times the test ran within the sampling window. Higher iterations signify faster and more stable performance.
+- **Time (ns/op)**: The average duration of a single operation in nanoseconds ($1 \text{ ms} = 1,000,000 \text{ ns}$). Lower is better.
+- **Memory (B/op)**: The average heap memory allocated per operation in bytes. Lower is better.
+- **Allocs (allocs/op)**: The average number of heap memory allocations per operation. Zero or low allocations are optimal for garbage collector efficiency.
+
 ### Latest Benchmark Report
 
 | Benchmark | Iterations | Time (ns/op) | Memory (B/op) | Allocs (allocs/op) |
 | :--- | ---: | ---: | ---: | ---: |
-| `BenchmarkCreateTopic` | 4,048,650 | 1,205 | 255 | 2 |
-| `BenchmarkAppendToLog` | 9,485,460 | 175.2 | 99 | 0 |
-| `BenchmarkAppendToLogParallel` | 5,196,242 | 224.7 | 84 | 0 |
-| `BenchmarkGetMessageFromLog` | 2,137,838 | 524.4 | 160 | 6 |
-| `BenchmarkGetMessageFromLogParallel` | 2,235,476 | 584.9 | 192 | 6 |
-| `BenchmarkGetTopics` | 14 | 90,106,971 | 64,798,720 | 1 |
-| `BenchmarkCapacity_10kTopics` | 235 | 6,189,460 | 197,655 | 19,900 |
-| `BenchmarkCapacity_100kMessages` | 100 | 10,753,486 | 8,179,548 | 0 |
-| `BenchmarkCapacity_10kConsumers` | 100 | 15,391,043 | 3,213,052 | 50,062 |
-| `BenchmarkCapacity_MixedWorkload` | 100 | 10,597,317 | 4,488,109 | 9,830 |
-| `BenchmarkCapacity_FullMix` | 25 | 48,891,428 | 11,767,885 | 605,200 |
+| `BenchmarkCreateTopic` | 1,000,000 | 1,160 | 574 | 6 |
+| `BenchmarkAppendToLog` | 10,436,515 | 196.9 | 103 | 1 |
+| `BenchmarkAppendToLogParallel` | 7,607,821 | 264.3 | 108 | 1 |
+| `BenchmarkGetMessageFromLog` | 3,747,411 | 307.2 | 160 | 6 |
+| `BenchmarkGetMessageFromLogParallel` | 3,071,380 | 390.6 | 192 | 6 |
+| `BenchmarkGetTopics` | 104,271 | 11,161 | 16,384 | 1 |
+| `BenchmarkCapacity_1kTopics` | 3,182 | 363,909 | 561,122 | 5,968 |
+| `BenchmarkCapacity_10kMessages` | 1,274 | 982,608 | 666,208 | 23 |
+| `BenchmarkCapacity_1kConsumers` | 2,966 | 407,488 | 426,207 | 4,968 |
+| `BenchmarkCapacity_MixedWorkload` | 8,562 | 196,102 | 93,750 | 1,035 |
+| `BenchmarkCapacity_FullMix` | 1,946 | 605,228 | 147,968 | 6,621 |
+
+### Storage Model Performance: In-Memory vs. Disk Swap
+
+To illustrate the performance characteristics and cost of swapping segments to disk, we run a dedicated benchmark comparison that produces and consumes 200 messages:
+1. **In-Memory**: Configured with large segment limits (`MAX_SEGMENT_SIZE = 100MB`) so that messages remain entirely in memory.
+2. **Disk Swap**: Configured with tight segment limits (`MAX_SEGMENT_SIZE = 40B`, `MAX_TOPIC_SIZE = 60B`) forcing segments to constantly seal, write to disk, evict, and reload transparently.
+
+| Benchmark | Iterations | Time (ns/op) | Time (ms/op) | Memory (B/op) | Allocs (allocs/op) |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| `BenchmarkStorage_InMemory` | 14,214 | 84,080 | 0.084 ms | 34,950 | 1,209 |
+| `BenchmarkStorage_DiskSwap` | 2 | 589,292,450 | 589.29 ms | 3,213,192 | 13,832 |
+
+**Key Takeaway**: 
+Operating entirely in RAM achieves a **~7,000x throughput speedup** compared to triggering continuous disk operations (sealing + file write + fsync) and memory thrashing (eviction + on-demand file read). This underscores the utility of keeping segment sizes large enough to fit active working sets in RAM, while using disk eviction only for older, inactive historical logs.
+
 
 ### Capacity Overview
-Since upgrading the internal metadata structures from slices ($O(N)$) to constant-time hash tables (`map[string]int`), operation throughput has massively improved! 
+Since upgrading the internal metadata structures from slices ($O(N)$) to constant-time hash tables (`map[string]int`), and optimizing benchmarks to avoid disk overhead, operation throughput has massively improved! 
 
-A full mixed round-trip evaluation (`BenchmarkCapacity_FullMix`)—modeling the instantiation of 100 topics, 1,000 active consumers, 10,000 published messages, and 100,000 parallel sequential reads—now clears in collectively under **~49ms** (vs ~500ms on strings/slices previously).
+- **Full Mixed Workload (`BenchmarkCapacity_FullMix`)**: Modeling the instantiation of 10 topics, 10 consumers per topic, 10 published messages, and 100 sequential reads per topic—now completes in collectively under **0.6ms** (605,228 ns).
+- **High-Volume Publish (`BenchmarkCapacity_10kMessages`)**: Publishing 10,000 messages onto a single topic completes in under **0.98ms** (982,608 ns), showcasing highly optimized log appending performance.
 
 Contributing
 - Pull requests welcome. Create an issue or PR for larger changes.
