@@ -290,6 +290,12 @@ func AppendToLog(topic, message string) error {
 	// Get active segment which should be the last segment
 	active := tl.Segments[len(tl.Segments)-1]
 
+	// Real-time Durability: write directly to disk log file immediately
+	path := filepath.Join(config.DATA_DIR, "topics", topic, fmt.Sprintf("seg-%d.log", active.Id))
+	if err := active.AppendMessageToDisk(path, message); err != nil {
+		return fmt.Errorf("failed to append message to disk: %w", err)
+	}
+
 	active.Lock()
 	active.Messages = append(active.Messages, message)
 	active.Count++
@@ -299,18 +305,8 @@ func AppendToLog(topic, message string) error {
 	tl.Size += msgSize
 	active.Unlock()
 
-	// Check if active segment needs rotation to the disk
+	// Check if active segment needs rotation
 	if active.Size >= config.MAX_SEGMENT_SIZE {
-		// Create segment directory if not exists
-		dir := filepath.Join(config.DATA_DIR, "topics", topic)
-		os.MkdirAll(dir, 0755)
-
-		// Persist the current active segment
-		path := filepath.Join(dir, fmt.Sprintf("seg-%d.log", active.Id))
-		if err := active.WriteToDisk(path); err != nil {
-			return fmt.Errorf("failed to persist active segment: %w", err)
-		}
-
 		newSeg := &types.Segment{
 			Id:         active.Id + 1,
 			BaseOffset: active.BaseOffset + active.Count,
@@ -318,19 +314,44 @@ func AppendToLog(topic, message string) error {
 			Messages:   make([]string, 0),
 		}
 		tl.Segments = append(tl.Segments, newSeg)
-
-		// Evict older sealed segments if total topic size exceeds the max size for the topic
-
-		evictSealedSegments(tl, topic)
-
 	}
+
+	// Enforce retention policies (both physical deletion and RAM eviction) on every append
+	evictSealedSegments(tl, topic)
 
 	return nil
 }
 
-// evictSealedSegments evicts sealed segments from RAM to keep memory usage bounded
+// evictSealedSegments enforces size-based retention and RAM eviction for topic segments
 func evictSealedSegments(tl *types.TopicLog, topic string) {
-	// Calculate what is currently loaded in RAM
+	// 1. Enforce size-based physical retention deletion (delete older segments completely if total topic size exceeds MAX_TOPIC_SIZE)
+	for len(tl.Segments) > 1 {
+		totalSize := 0
+		for _, s := range tl.Segments {
+			s.RLock()
+			totalSize += s.Size
+			s.RUnlock()
+		}
+
+		if totalSize <= config.MAX_TOPIC_SIZE {
+			break
+		}
+
+		// Delete the oldest segment from disk and metadata list
+		oldest := tl.Segments[0]
+		path := filepath.Join(config.DATA_DIR, "topics", topic, fmt.Sprintf("seg-%d.log", oldest.Id))
+		_ = os.Remove(path)
+
+		tl.Size -= oldest.Size
+		tl.Segments = tl.Segments[1:]
+	}
+
+	// 2. RAM eviction: unload sealed segments from RAM if loaded RAM size exceeds MAX_TOPIC_SIZE / 2
+	ramLimit := config.MAX_TOPIC_SIZE / 2
+	if ramLimit < config.MAX_SEGMENT_SIZE {
+		ramLimit = config.MAX_SEGMENT_SIZE
+	}
+
 	loadedSize := 0
 	for _, seg := range tl.Segments {
 		seg.RLock()
@@ -340,27 +361,16 @@ func evictSealedSegments(tl *types.TopicLog, topic string) {
 		seg.RUnlock()
 	}
 
-	// Evict from oldest to newest sealed segment (exclude the active segment)
 	for i := 0; i < len(tl.Segments)-1; i++ {
-		if loadedSize < config.MAX_TOPIC_SIZE {
+		if loadedSize <= ramLimit {
 			break
 		}
 		seg := tl.Segments[i]
 		seg.Lock()
 		if seg.Loaded {
-			dir := filepath.Join(config.DATA_DIR, "topics", topic)
-			os.MkdirAll(dir, 0755)
-			path := filepath.Join(dir, fmt.Sprintf("seg-%d.log", seg.Id))
-			seg.Unlock()
-			_ = seg.WriteToDisk(path)
-
-			seg.Lock()
-			// clear the in-memory message
-			if seg.Loaded {
-				loadedSize -= seg.Size
-				seg.Messages = nil
-				seg.Loaded = false
-			}
+			loadedSize -= seg.Size
+			seg.Messages = nil
+			seg.Loaded = false
 		}
 		seg.Unlock()
 	}
@@ -384,6 +394,22 @@ func GetMessageFromLog(consumer, topic string) (string, error) {
 	tl.Lock()
 	defer tl.Unlock()
 
+	if len(tl.Segments) == 0 {
+		return "", fmt.Errorf("no segments available")
+	}
+
+	oldestSeg := tl.Segments[0]
+	active := tl.Segments[len(tl.Segments)-1]
+
+	// Auto-Reset: If offset points to a deleted segment, reset to the active segment's BaseOffset (latest base offset)
+	if offset < oldestSeg.BaseOffset {
+		offset = active.BaseOffset
+		key := fmt.Sprintf("%s:%s", topic, consumer)
+		offsets.Lock()
+		offsets.Positions[key] = offset
+		offsets.Unlock()
+	}
+
 	var targetSeg *types.Segment
 	for _, seg := range tl.Segments {
 		seg.RLock()
@@ -395,9 +421,8 @@ func GetMessageFromLog(consumer, topic string) (string, error) {
 		seg.RUnlock()
 	}
 
-	// If offset is out of bounds or in the active segment
+	// If offset is in the active segment
 	if targetSeg == nil {
-		active := tl.Segments[len(tl.Segments)-1]
 		active.RLock()
 		if offset >= active.BaseOffset && offset < active.BaseOffset+active.Count {
 			targetSeg = active
@@ -409,7 +434,7 @@ func GetMessageFromLog(consumer, topic string) (string, error) {
 		return "", fmt.Errorf("offset out of bounds")
 	}
 
-	// load the segment  to memory from disk
+	// load the segment to memory from disk
 	targetSeg.Lock()
 	if !targetSeg.Loaded {
 		dir := filepath.Join(config.DATA_DIR, "topics", topic)
@@ -421,7 +446,7 @@ func GetMessageFromLog(consumer, topic string) (string, error) {
 		targetSeg.Lock()
 	}
 
-	// fetch message from base offset and baseoffset
+	// fetch message
 	localOffset := offset - targetSeg.BaseOffset
 	if localOffset < 0 || localOffset >= len(targetSeg.Messages) {
 		targetSeg.Unlock()
@@ -430,7 +455,7 @@ func GetMessageFromLog(consumer, topic string) (string, error) {
 	msg := targetSeg.Messages[localOffset]
 	targetSeg.Unlock()
 
-	// Evict older segments if loading if loading the segmeent pushed the max size limit
+	// Evict older segments if loading pushed the max size limit
 	evictSealedSegments(tl, topic)
 
 	// Increment offset
@@ -514,6 +539,10 @@ func RestoreStore(newTopics []string, newConsumers []string, newMessages map[str
 	// Restore segment logs
 	newLogs := make(map[string]*types.TopicLog)
 	for topic, msgs := range newMessages {
+		dir := filepath.Join(config.DATA_DIR, "topics", topic)
+		_ = os.RemoveAll(dir)
+		_ = os.MkdirAll(dir, 0755)
+
 		tl := &types.TopicLog{
 			Segments: make([]*types.Segment, 0),
 		}
@@ -555,6 +584,8 @@ func RestoreStore(newTopics []string, newConsumers []string, newMessages map[str
 		tlsize := 0
 		for _, s := range tl.Segments {
 			tlsize += s.Size
+			path := filepath.Join(dir, fmt.Sprintf("seg-%d.log", s.Id))
+			_ = s.WriteToDisk(path)
 		}
 		tl.Size = tlsize
 		evictSealedSegments(tl, topic)

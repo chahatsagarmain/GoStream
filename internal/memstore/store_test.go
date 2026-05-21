@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"testing"
@@ -420,7 +421,6 @@ func BenchmarkCapacity_FullMix(b *testing.B) {
 	}
 }
 
-
 // Reset clears all state, useful for testing
 func Reset() {
 	topics.Lock()
@@ -453,14 +453,9 @@ func TestSegmentationAndSealing(t *testing.T) {
 	os.RemoveAll("./test_data")
 	config.DATA_DIR = "./test_data"
 
-	// 2. Set very small segment size limit and topic size limit.
-	// unsafe.Sizeof(string) is typically 16 bytes.
-	// We want to force rotation on 3rd message.
-	// Two messages of 16 bytes each is 32. Let's set MAX_SEGMENT_SIZE to 40.
-	// And set MAX_TOPIC_SIZE to 60, so that once we have two sealed segments and
-	// write another, we evict the oldest segment.
+	// 2. Set segment size and topic limits.
 	config.MAX_SEGMENT_SIZE = 40
-	config.MAX_TOPIC_SIZE = 60
+	config.MAX_TOPIC_SIZE = 100 // RAM eviction threshold at MAX_TOPIC_SIZE/2 = 50
 
 	defer func() {
 		config.MAX_SEGMENT_SIZE = origMaxSegmentSize
@@ -480,16 +475,10 @@ func TestSegmentationAndSealing(t *testing.T) {
 	}
 
 	// 3. Append messages to trigger segmentation.
-	// Message size is 16 bytes.
-	// Msg 1: Size = 16. Segment 0 (active).
-	// Msg 2: Size = 32. Segment 0 (active).
-	// Msg 3: Size = 48. This is >= MAX_SEGMENT_SIZE (40), so:
-	//   - Segment 0 is sealed (written to disk and kept in memory)
-	//   - Segment 1 (active) is created with Msg 3.
-	if err := AppendToLog(topic, "msg-00001"); err != nil { // 16 bytes
+	if err := AppendToLog(topic, "msg-00001"); err != nil {
 		t.Fatalf("failed to append msg1: %v", err)
 	}
-	if err := AppendToLog(topic, "msg-00002"); err != nil { // 16 bytes
+	if err := AppendToLog(topic, "msg-00002"); err != nil {
 		t.Fatalf("failed to append msg2: %v", err)
 	}
 
@@ -508,9 +497,6 @@ func TestSegmentationAndSealing(t *testing.T) {
 		t.Fatalf("expected 1 segment, got %d", segCount)
 	}
 
-	// Append msg-00003. This exceeds MAX_SEGMENT_SIZE (40) since the existing segment size was 32,
-	// and msg-00003 adds 16. Total size before rotation checks would be 48 >= 40.
-	// It should trigger sealing of Segment 0 and rotation to Segment 1.
 	if err := AppendToLog(topic, "msg-00003"); err != nil {
 		t.Fatalf("failed to append msg3: %v", err)
 	}
@@ -522,7 +508,6 @@ func TestSegmentationAndSealing(t *testing.T) {
 		t.Fatalf("expected 2 segments after rotation, got %d", segCount)
 	}
 
-	// Segment 0 must be sealed, written to disk, and still loaded.
 	seg0 := tl.Segments[0]
 	seg1 := tl.Segments[1]
 	tl.RUnlock()
@@ -543,22 +528,13 @@ func TestSegmentationAndSealing(t *testing.T) {
 	}
 	seg1.RUnlock()
 
-	// 4. Append more messages to trigger eviction of Segment 0.
-	// Since MAX_TOPIC_SIZE = 60, and loaded sizes are:
-	// Seg 0: 48 bytes
-	// Seg 1: 0 bytes
-	// Total loaded size is 48.
-	// Let's append Msg 4 (16 bytes) into Seg 1. Seg 1 size is 16. Total loaded: 64. No rotation.
+	// 4. Append more messages to trigger RAM eviction of Segment 0.
 	if err := AppendToLog(topic, "msg-00004"); err != nil {
 		t.Fatalf("failed to append msg4: %v", err)
 	}
-	// Let's append Msg 5 (16 bytes) into Seg 1. Seg 1 size is 32. Total loaded: 80. No rotation.
 	if err := AppendToLog(topic, "msg-00005"); err != nil {
 		t.Fatalf("failed to append msg5: %v", err)
 	}
-	// Let's append Msg 6 (16 bytes) into Seg 1. Seg 1 size is 48. This triggers rotation.
-	// Total loaded before rotation check: Seg 0 (48) + Seg 1 (48) + Seg 2 (0) = 96 > MAX_TOPIC_SIZE (60).
-	// This triggers eviction of Segment 0 (oldest sealed segment).
 	if err := AppendToLog(topic, "msg-00006"); err != nil {
 		t.Fatalf("failed to append msg6: %v", err)
 	}
@@ -581,7 +557,7 @@ func TestSegmentationAndSealing(t *testing.T) {
 	}
 
 	// 5. Consume from the evicted segment. It should transparently reload from disk.
-	config.MAX_TOPIC_SIZE = 100
+	config.MAX_TOPIC_SIZE = 300 // increase to prevent immediate re-eviction on reload
 	msg, err := GetMessageFromLog(consumer, topic)
 	if err != nil {
 		t.Fatalf("failed to get message from evicted segment: %v", err)
@@ -600,6 +576,86 @@ func TestSegmentationAndSealing(t *testing.T) {
 	}
 }
 
+func TestRetentionDeletion(t *testing.T) {
+	Reset()
+
+	origMaxSegmentSize := config.MAX_SEGMENT_SIZE
+	origMaxTopicSize := config.MAX_TOPIC_SIZE
+	origDataDir := config.DATA_DIR
+
+	os.RemoveAll("./test_retention_data")
+	config.DATA_DIR = "./test_retention_data"
+	config.MAX_SEGMENT_SIZE = 40
+	config.MAX_TOPIC_SIZE = 60
+
+	defer func() {
+		config.MAX_SEGMENT_SIZE = origMaxSegmentSize
+		config.MAX_TOPIC_SIZE = origMaxTopicSize
+		config.DATA_DIR = origDataDir
+		os.RemoveAll("./test_retention_data")
+	}()
+
+	topic := "retention-topic"
+	consumer := "retention-consumer"
+
+	if err := CreateTopic(topic); err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+	if err := CreateConsumer(consumer, topic); err != nil {
+		t.Fatalf("failed to create consumer: %v", err)
+	}
+
+	_ = AppendToLog(topic, "msg-00001")
+	_ = AppendToLog(topic, "msg-00002")
+	_ = AppendToLog(topic, "msg-00003") // seals Segment 0 (final size = 48)
+
+	// Append Msg 4 -> written to Segment 1 (size = 16). Total topic size = 48 + 16 = 64 > 60.
+	// This triggers deletion of Segment 0.
+	if err := AppendToLog(topic, "msg-00004"); err != nil {
+		t.Fatalf("failed to append Msg 4: %v", err)
+	}
+
+	topicLogs.RLock()
+	tl, exists := topicLogs.Logs[topic]
+	topicLogs.RUnlock()
+	if !exists {
+		t.Fatalf("topic log not found")
+	}
+
+	tl.RLock()
+	segCount := len(tl.Segments)
+	oldestSegID := tl.Segments[0].Id
+	tl.RUnlock()
+
+	if segCount != 1 {
+		t.Errorf("expected 1 segment remaining (active), got %d", segCount)
+	}
+	if oldestSegID != 1 {
+		t.Errorf("expected oldest segment to be ID 1 (Segment 0 deleted), got %d", oldestSegID)
+	}
+
+	seg0Path := filepath.Join(config.DATA_DIR, "topics", topic, "seg-0.log")
+	if _, err := os.Stat(seg0Path); !os.IsNotExist(err) {
+		t.Errorf("expected Segment 0 log file to be deleted, but it still exists")
+	}
+
+	// Consumer starts with offset 0. Segment 0 is deleted.
+	// Offset 0 < Segment 1's BaseOffset (3), so it auto-resets to the active segment's BaseOffset (3).
+	// This will consume "msg-00004".
+	msg, err := GetMessageFromLog(consumer, topic)
+	if err != nil {
+		t.Fatalf("failed to read message: %v", err)
+	}
+	if msg != "msg-00004" {
+		t.Errorf("expected msg-00004, got %q", msg)
+	}
+
+	off, err := GetOffset(consumer, topic)
+	if err != nil || off != 4 {
+		t.Errorf("expected offset 4, got %d with err %v", off, err)
+	}
+}
+
 func TestLargeSegmentation(t *testing.T) {
 	Reset()
 
@@ -610,7 +666,7 @@ func TestLargeSegmentation(t *testing.T) {
 	os.RemoveAll("./test_large_data")
 	config.DATA_DIR = "./test_large_data"
 	config.MAX_SEGMENT_SIZE = 100
-	config.MAX_TOPIC_SIZE = 300
+	config.MAX_TOPIC_SIZE = 20000
 
 	defer func() {
 		config.MAX_SEGMENT_SIZE = origMaxSegmentSize
@@ -731,7 +787,7 @@ func BenchmarkStorage_DiskSwap(b *testing.B) {
 	origDir := config.DATA_DIR
 
 	config.MAX_SEGMENT_SIZE = 40
-	config.MAX_TOPIC_SIZE = 60
+	config.MAX_TOPIC_SIZE = 4000
 	config.DATA_DIR = "./test_bench_disk"
 
 	defer func() {
@@ -766,4 +822,3 @@ func BenchmarkStorage_DiskSwap(b *testing.B) {
 		}
 	}
 }
-

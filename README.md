@@ -104,15 +104,16 @@ All writes (appends) target the **active segment** (the last segment in the slic
                                      ▼
                       +-----------------------------+
                       |   Active Segment (Id: 0)    |
-                      |   - RAM: msg1, msg2, msg3   |
-                      |   - Size: 48B / Limit: 40B  |
+                      |   - RAM: msg1, msg2         |
+                      |   - Write to seg-0.log & sync|
+                      |   - Size: 32B / Limit: 40B  |
                       +--------------+--------------+
-                                     | (Size exceeds MAX_SEGMENT_SIZE)
+                                     | (Append msg3 makes size 48B >= 40B)
                                      ▼
                       +-----------------------------+
-                      |       Seal Segment 0        |
-                      |   - Write to seg-0.log      |
-                      |   - Perform fsync()         |
+                      |       Rotate Segment        |
+                      |   - Seal active segment 0   |
+                      |   - Create active segment 1 |
                       +--------------+--------------+
                                      |
                                      ▼
@@ -125,18 +126,20 @@ All writes (appends) target the **active segment** (the last segment in the slic
 
 * **Trigger**: When an append makes the active segment size $\ge$ `MAX_SEGMENT_SIZE`.
 * **Action**:
-  1. The active segment is **sealed** (it becomes immutable).
-  2. The segment is flushed to disk at `DATA_DIR/topics/<topic>/seg-<id>.log` using a temporary file rename pattern and an explicit `fsync()` system call for durability.
+  1. The message is written directly to the active segment's log file `seg-<id>.log` on disk using an explicit `fsync()` system call to guarantee real-time durability.
+  2. Because the active segment's size is now $\ge$ `MAX_SEGMENT_SIZE`, the active segment is **sealed** (it becomes immutable).
   3. A new active segment with `Id = active.Id + 1` and `BaseOffset = active.BaseOffset + active.Count` is initialized in RAM.
 
 ---
 
-### 2. Eviction (Memory Bounding Stage)
+### 2. Size-based Retention & RAM Eviction (Memory Bounding Stage)
 
-To ensure that the application's RAM usage remains bounded regardless of topic size, older sealed segments are evicted from RAM.
+GoStream applies two levels of retention/memory bounding on every append:
+1. **Size-based Retention (Disk Deletion)**: If the total size of all segments on disk exceeds `MAX_TOPIC_SIZE`, older segments are permanently deleted from the disk and metadata list to bound disk space usage.
+2. **RAM Eviction**: To bound memory usage, if the total loaded RAM size of all segments exceeds the RAM limit (`MAX_TOPIC_SIZE / 2`, or at minimum `MAX_SEGMENT_SIZE`), older sealed segments are unloaded from RAM.
 
 ```
-Total Loaded RAM Size = [Seg 0 (48B)] + [Seg 1 (48B)] = 96B  (Limit: MAX_TOPIC_SIZE = 60B)
+Total Loaded RAM Size = [Seg 0 (48B)] + [Seg 1 (48B)] = 96B  (Limit: MAX_TOPIC_SIZE/2 = 50B)
                                      │
                                      ▼
                          +───────────────────────+
@@ -151,11 +154,11 @@ Total Loaded RAM Size = [Seg 0 (48B)] + [Seg 1 (48B)] = 96B  (Limit: MAX_TOPIC_S
 +─────────────────────────────+             +─────────────────────────────+
 ```
 
-* **Trigger**: After a segment is sealed or loaded, the system sums the sizes of all segments currently marked as `Loaded`. If this sum $\ge$ `MAX_TOPIC_SIZE`, eviction is triggered.
+* **Trigger**: After a segment is sealed or loaded, the system sums the sizes of all segments currently marked as `Loaded`. If this sum exceeds the RAM limit (`MAX_TOPIC_SIZE / 2`, or at minimum `MAX_SEGMENT_SIZE`), RAM eviction is triggered.
 * **Action**:
-  - The system iterates from the oldest segment (`Id = 0`) to the second newest segment (excluding the active segment).
+  - The system iterates from the oldest segment to the second newest segment (excluding the active segment).
   - For each loaded segment, it frees the `Messages` slice (`Messages = nil`) and sets `Loaded = false`.
-  - This process stops as soon as the total loaded size falls below `MAX_TOPIC_SIZE`.
+  - This process stops as soon as the total loaded size falls below the RAM limit.
 
 ---
 
@@ -184,7 +187,8 @@ When a consumer requests a message, the system resolves the request through a ta
                        +────────────────────────────────────+
                        |        Serve Message & Evict       |
                        |   - Return message at offset 2     |
-                       |   - Run eviction if size exceeded  |
+                       |   - Run eviction if RAM limit      |
+                       |     exceeded                       |
                        +────────────────────────────────────+
 ```
 
@@ -279,15 +283,15 @@ When viewing the reports below, the columns indicate the following metrics:
 
 To illustrate the performance characteristics and cost of swapping segments to disk, we run a dedicated benchmark comparison that produces and consumes 200 messages:
 1. **In-Memory**: Configured with large segment limits (`MAX_SEGMENT_SIZE = 100MB`) so that messages remain entirely in memory.
-2. **Disk Swap**: Configured with tight segment limits (`MAX_SEGMENT_SIZE = 40B`, `MAX_TOPIC_SIZE = 60B`) forcing segments to constantly seal, write to disk, evict, and reload transparently.
+2. **Disk Swap**: Configured with tight segment limits (`MAX_SEGMENT_SIZE = 40B`, `MAX_TOPIC_SIZE = 4000B`) forcing segments to constantly seal, write to disk, evict, and reload transparently (without triggering physical retention deletion).
 
 | Benchmark | Iterations | Time (ns/op) | Time (ms/op) | Memory (B/op) | Allocs (allocs/op) |
 | :--- | ---: | ---: | ---: | ---: | ---: |
-| `BenchmarkStorage_InMemory` | 14,214 | 84,080 | 0.084 ms | 34,950 | 1,209 |
-| `BenchmarkStorage_DiskSwap` | 2 | 589,292,450 | 589.29 ms | 3,213,192 | 13,832 |
+| `BenchmarkStorage_InMemory` | 6 | 201,087,950 | 201.09 ms | 357,068 | 4,421 |
+| `BenchmarkStorage_DiskSwap` | 3 | 428,842,333 | 428.84 ms | 786,778 | 6,268 |
 
 **Key Takeaway**: 
-Operating entirely in RAM achieves a **~7,000x throughput speedup** compared to triggering continuous disk operations (sealing + file write + fsync) and memory thrashing (eviction + on-demand file read). This underscores the utility of keeping segment sizes large enough to fit active working sets in RAM, while using disk eviction only for older, inactive historical logs.
+Because GoStream uses real-time durability (flushing every single append directly to disk using `fsync`), both configurations spend the majority of their time on I/O during the append phase. However, `BenchmarkStorage_DiskSwap` requires an additional ~227.75 ms (~2.1x slower) due to the overhead of rotating and sealing segments, evicting them from RAM, and transparently reloading them from disk during the consume stage. This highlights the efficiency of caching segments in-memory when reading, while still preserving data durability on disk.
 
 
 ### Capacity Overview

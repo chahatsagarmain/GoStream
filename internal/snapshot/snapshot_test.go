@@ -97,7 +97,7 @@ func TestLargeSnapshotRestore(t *testing.T) {
 	origDataDir := config.DATA_DIR
 
 	config.MAX_SEGMENT_SIZE = 100
-	config.MAX_TOPIC_SIZE = 300
+	config.MAX_TOPIC_SIZE = 10000
 	config.DATA_DIR = "./test_large_snapshot_data"
 
 	defer func() {

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"sync"
 )
 
@@ -87,6 +88,35 @@ func (s *Segment) WriteToDisk(path string) error {
 	}
 
 	return os.Rename(tmp, path)
+}
+
+// AppendMessageToDisk appends a single message to the segment file on disk.
+func (s *Segment) AppendMessageToDisk(path, message string) error {
+	s.Lock()
+	defer s.Unlock()
+
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	line, err := json.Marshal(message)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(line); err != nil {
+		return err
+	}
+	if _, err := f.Write([]byte("\n")); err != nil {
+		return err
+	}
+	return f.Sync()
 }
 
 // LoadFromDisk loads messages from path as JSON back into RAM.
